@@ -325,7 +325,7 @@
   <div id="modalFidelityBack" class="modal-back">
     <div class="modal" role="dialog" aria-modal="true" style="max-width:1000px">
       <h3>🏆 Programa de Fidelidade</h3>
-      <p class="small">Cada R$ 15,00 em compras gera 1 selo de fidelidade — a cada 10 selos (R$ 150) você ganha um brinde! 🎁</p>
+      <p class="small" id="fidelityDesc">Programa de fidelidade — configure os valores abaixo ⚙️</p>
       <div id="fidelityControls" style="display:flex;gap:8px;align-items:center;margin-top:8px"></div>
       <div id="fidelityContent" style="max-height:60vh;overflow:auto;margin-top:12px"></div>
       <div style="display:flex;justify-content:flex-end;margin-top:10px">
@@ -356,11 +356,9 @@
       <div class="sv2-header">
         <h3>📦 Gestão de Estoque</h3>
         <div class="sv2-tabs">
-          <button type="button" class="sv2-tab active" data-tab="dashboard">📊 Dashboard</button>
-          <button type="button" class="sv2-tab" data-tab="locais">📍 Locais</button>
-          <button type="button" class="sv2-tab" data-tab="estoque">📦 Estoques</button>
-          <button type="button" class="sv2-tab" data-tab="historico">📋 Histórico</button>
-          <button type="button" class="sv2-tab" data-tab="custos">💰 Custos</button>
+          <button type="button" class="sv2-tab active" data-tab="visao">📊 Visão Geral</button>
+          <button type="button" class="sv2-tab" data-tab="producao">🏭 Produção</button>
+          <button type="button" class="sv2-tab" data-tab="movimentacao">↔️ Movimentação</button>
         </div>
         <button id="stockV2Close" class="btn-gray" type="button" style="margin-left:auto;white-space:nowrap">✕ Fechar</button>
       </div>
