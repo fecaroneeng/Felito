@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Felito — Controle Completo (Login + Sync + Estoque + Fidelidade + Clientes)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link href="https://fonts.googleapis.com/css2?family=Alice&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <!-- firebase SDK (v8) -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+</head>
+<body>
+  <div class="center">
+
+    <!-- LOGIN CARD -->
+    <div id="loginCard" class="card" style="max-width:480px;margin:18px auto;text-align:center">
+      <h1>FELITO</h1>
+      <p class="small">Entre com sua conta</p>
+      <input id="loginEmail" type="email" placeholder="E-mail" style="margin-top:8px"/>
+      <input id="loginSenha" type="password" placeholder="Senha" style="margin-top:8px"/>
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:10px">
+        <button id="btnLogin" class="btn-yellow">Entrar</button>
+        <button id="btnCriar" class="btn-gray">Criar conta</button>
+      </div>
+      <p class="footer-small">Se der erro de permissão ao gravar/atualizar na nuvem, peça as regras do Firestore.</p>
+    </div>
+
+    <!-- APP -->
+    <div id="app" style="display:none">
+      <div class="card">
+        <div class="topbar">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <h1 style="margin:0">FELITO</h1>
+            <div class="badge">Pedido atual: <span id="pedidoBadge">001</span></div>
+            <button id="btnEditCurrentOrder" class="small-btn btn-gray" title="Editar nº do pedido atual">Editar nº</button>
+            <div class="small">Último cliente: <span id="lastClient">—</span></div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button id="btnStockV2" class="btn-green">📦 Estoque</button>
+            <button id="btnAnalytics" class="btn-gray" style="background:#5c4a8a;color:#fff">📊 Vendas</button>
+            <button id="btnFidelity" class="btn-accent">🏆 Fidelidade</button>
+            <button id="btnClients" class="btn-gray">👥 Clientes</button>
+            <button id="btnProdutos" class="btn-gray" style="background:#0f766e;color:#fff">🍦 Produtos</button>
+            <button id="btnLogout" class="btn-red">Sair</button>
+          </div>
+        </div>
+
+        <!-- KPIs + filter/sort -->
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px;align-items:center;justify-content:space-between">
+          <div class="kpis">
+            <div class="kpi kpi--compact">
+              <div class="small">Total Pedidos</div>
+              <div id="kpiTotal" class="big">0</div>
+            </div>
+
+            <div class="kpi kpi--compact">
+              <div class="small">Valor Total (R$)</div>
+              <div id="kpiValor" class="big">R$ 0,00</div>
+            </div>
+
+            <div class="kpi">
+              <div class="small">Pendentes</div>
+              <div id="kpiPendentes" class="big">0</div>
+            </div>
+          </div>
+
+          <!-- Controls side-by-side -->
+          <div class="controls-row" style="align-items:center">
+            <label class="small" style="margin-right:6px">Período</label>
+            <select id="monthSelect" class="short-select" style="min-width:120px"></select>
+
+            <label class="small" style="margin-left:6px;margin-right:6px">Filtrar</label>
+            <select id="filterStatus" class="short-select">
+              <option value="all">Todos</option>
+              <option value="A Fazer">A Fazer</option>
+              <option value="À Entregar">À Entregar</option>
+              <option value="Entregue">Entregue</option>
+              <option value="Pago">Pago</option>
+              <option value="Cancelado">Cancelado</option>
+              <option value="Resgate">Resgate</option>
+            </select>
+
+            <input id="clientFilter" placeholder="Buscar cliente (tabela)" style="padding:6px;border-radius:6px;border:1px solid #ddd;margin-left:8px;" />
+
+            <label class="small" style="margin-left:6px;margin-right:6px">Ordenar</label>
+            <select id="sortSelect" class="short-select">
+              <option value="pedido-desc">Pedido nº (desc)</option>
+              <option value="pedido-asc">Pedido nº (asc)</option>
+              <option value="recent">Mais recentes</option>
+              <option value="oldest">Mais antigos</option>
+              <option value="sabor-asc">Sabor A→Z</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- ORDER SECTION (button only — form opens as modal panel) -->
+        <div id="orderSection" style="margin-top:12px">
+          <button type="button" id="btnShowOrderForm" class="btn-yellow order-panel-trigger">
+            <span class="order-trigger-icon">＋</span>
+            <span>Lançar Novo Pedido</span>
+            <span id="orderCartBadge" class="order-cart-badge" style="display:none">0</span>
+          </button>
+        </div><!-- /orderSection -->
+
+        <!-- tabela principal -->
+        <div class="table-wrapper card" style="margin-top:12px;padding:0">
+          <table id="tableMain">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Cliente</th>
+                <th>Tam.</th>
+                <th>Qtd</th>
+                <th>Sabor</th>
+                <th>R$ Unit.</th>
+                <th>Total</th>
+                <th>Pedido</th>
+                <th>Data</th>
+                <th>Local</th>
+                <th>Contato</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyMain"></tbody>
+          </table>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+          <div class="small">Itens: <strong id="countItems">0</strong></div>
+          <div class="small">Total: <strong id="sumTotal">R$ 0,00</strong></div>
+        </div>
+
+        <!-- ações secundárias / administrativas -->
+        <div class="admin-action-bar" style="margin-top:14px">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button id="btnSummary" class="btn-yellow">📅 Resumo Mensal</button>
+            <button id="btnSyncFromCloud" class="btn-gray">☁️ Sincronizar da nuvem</button>
+            <button id="btnCopyStock" class="btn-green">📋 Copiar catálogo</button>
+            <button type="button" id="btnToggleUtils" class="btn-gray" style="margin-left:auto">⚙️ Utilidades ▾</button>
+          </div>
+          <div id="utilsPanel" style="display:none;margin-top:10px;background:#f0ebe3;border-radius:10px;padding:12px;border:1px solid #ddd">
+            <div class="utils-grid">
+              <div class="utils-group">
+                <div class="utils-group-label">Dados / Pedidos</div>
+                <button id="btnExportCSV" class="btn-gray small-btn">↑ CSV</button>
+                <button id="btnImportCSV" class="btn-gray small-btn">↓ CSV</button>
+                <button id="btnExportJSON" class="btn-gray small-btn">↑ JSON</button>
+                <button id="btnImportJSON" class="btn-gray small-btn">↓ JSON</button>
+              </div>
+              <div class="utils-group">
+                <div class="utils-group-label">Clientes</div>
+                <button id="btnExportClientsCSV" class="btn-gray small-btn">↑ CSV</button>
+                <button id="btnExportClientsJSON" class="btn-gray small-btn">↑ JSON</button>
+                <button id="btnImportClients" class="btn-gray small-btn">↓ Importar</button>
+                <input id="fileImportClients" type="file" accept=".csv,application/json" style="display:none" />
+              </div>
+              <div class="utils-group">
+                <div class="utils-group-label">Admin</div>
+                <button id="btnEditStock" class="btn-gray small-btn">📦 Estoque legado</button>
+                <button id="btnForceSync" class="btn-gray small-btn">⚠️ Forçar sync (ADMIN)</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- legacy stockBox (hidden, kept for DOM refs) -->
+        <div id="stockBox" style="display:none"><div id="stockContent"></div></div>
+
+      </div><!-- card -->
+    </div><!-- app -->
+
+  </div><!-- center -->
+
+  <!-- ===================================================
+       MODAIS
+       =================================================== -->
+
+  <!-- modal NOVO PEDIDO panel -->
+  <div id="modalOrderBack" class="modal-back order-panel-back">
+    <div class="modal order-panel" role="dialog" aria-modal="true">
+      <div class="order-panel-header">
+        <h3>＋ Novo Pedido &nbsp;<span class="small" style="font-weight:400;color:#999">Pedido <span id="pedidoBadge2">001</span></span></h3>
+        <button type="button" id="btnCloseOrderPanel" class="btn-gray order-panel-close">✕</button>
+      </div>
+
+      <div class="order-panel-body">
+        <!-- FORM -->
+        <form id="formItem" class="order-panel-form">
+
+          <div class="order-field">
+            <label>Cliente</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="inputCliente" list="clientsDatalist" placeholder="Nome do cliente" autocomplete="off" style="flex:1" />
+              <datalist id="clientsDatalist"></datalist>
+              <button type="button" id="btnNewClient" class="small-btn btn-yellow" title="Cadastrar novo cliente">Cadastrar</button>
+            </div>
+          </div>
+
+          <div class="order-field">
+            <label>Local de Venda</label>
+            <div class="local-select-wrap">
+              <span id="localDotPreview" class="local-dot-preview"></span>
+              <select id="inputLocal" style="flex:1"></select>
+            </div>
+          </div>
+
+          <div class="order-field-row">
+            <div class="order-field">
+              <label>Tamanho</label>
+              <select id="inputTamanho"><option value="">Selecione um tamanho</option></select>
+            </div>
+            <div class="order-field">
+              <label>Quantidade</label>
+              <input id="inputQuantidade" type="number" min="1" value="1" />
+            </div>
+          </div>
+
+          <div class="order-field">
+            <label>Sabor</label>
+            <select id="inputSabor"><option value="">Selecione um sabor</option></select>
+          </div>
+
+          <div class="order-field-row">
+            <div class="order-field">
+              <label>Valor unitário (R$)</label>
+              <input id="inputValor" type="number" step="0.01" placeholder="Preenchido ao selecionar sabor/tam." />
+              <span class="valor-hint" id="valorHint"></span>
+            </div>
+            <div class="order-field">
+              <label>Status</label>
+              <select id="inputStatus">
+                <option>A Fazer</option><option>À Entregar</option><option>Entregue</option>
+                <option>Pago</option><option>Cancelado</option><option>Resgate</option>
+              </select>
+            </div>
+          </div>
+
+          <button type="button" id="btnAddToCart" class="btn-yellow" style="width:100%;padding:10px;font-size:0.95rem">
+            ＋ Adicionar ao pedido
+          </button>
+        </form>
+
+        <!-- CART SUMMARY -->
+        <div class="order-panel-cart">
+          <div class="order-panel-cart-header">
+            <strong>Resumo do pedido</strong>
+          </div>
+          <div id="cartList" class="small order-panel-cart-list"><em>Nenhum item adicionado</em></div>
+        </div>
+      </div>
+
+      <!-- FOOTER ACTIONS -->
+      <div class="order-panel-footer">
+        <button type="button" id="btnFinalize" class="btn-yellow">✓ Finalizar pedido</button>
+        <button type="button" id="btnCancelCart" class="btn-gray">✕ Cancelar pedido</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- modal edit item -->
+  <div id="modalBack" class="modal-back">
+    <div class="modal" role="dialog" aria-modal="true">
+      <h3 id="modalTitle">Editar item</h3>
+      <div id="modalBody">
+        <div style="display:grid;gap:8px">
+          <label>Pedido (nº)</label><input id="modalPedido" />
+          <label>Cliente</label><input id="modalCliente" />
+          <label>Local de Venda</label>
+          <select id="modalLocal"></select>
+          <label>Tamanho</label><select id="modalTamanho"><option value="">Selecione</option></select>
+          <label>Quantidade</label><input id="modalQtd" type="number" min="1" />
+          <label>Sabor</label><select id="modalSabor"><option value="">Selecione</option></select>
+          <label>Valor unitário (R$)</label><input id="modalValor" type="number" step="0.01" />
+          <label>Status</label>
+          <select id="modalStatus">
+            <option>A Fazer</option>
+            <option>À Entregar</option>
+            <option>Entregue</option>
+            <option>Pago</option>
+            <option>Cancelado</option>
+            <option>Resgate</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+          <button id="modalSave" class="btn-yellow">Salvar</button>
+          <button id="modalCancel" class="btn-gray">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- modal cliente -->
+  <div id="modalClientBack" class="modal-back">
+    <div class="modal" role="dialog" aria-modal="true" style="max-width:520px">
+      <h3>Cadastrar cliente</h3>
+      <div style="display:grid;gap:8px">
+        <label>Nome</label>
+        <input id="clientName" />
+        <label>Telefone (opcional)</label>
+        <input id="clientPhone" placeholder="(00) 00000-0000" />
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+          <button id="clientSave" class="btn-yellow">Salvar</button>
+          <button id="clientCancel" class="btn-gray">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- modal clients management -->
+  <div id="modalClientsBack" class="modal-back">
+    <div class="modal" role="dialog" aria-modal="true" style="max-width:720px">
+      <h3>Clientes</h3>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <button id="clientsNew" class="btn-yellow">Novo cliente</button>
+        <input id="clientsSearch" placeholder="Buscar por nome ou telefone" style="flex:1;padding:8px;border-radius:8px;border:1px solid #ddd" />
+        <button id="clientsClose" class="btn-gray">Fechar</button>
+      </div>
+      <div id="clientsContent" style="margin-top:12px;max-height:60vh;overflow:auto"></div>
+    </div>
+  </div>
+
+  <!-- modal fidelidade -->
+  <div id="modalFidelityBack" class="modal-back">
+    <div class="modal" role="dialog" aria-modal="true" style="max-width:1000px">
+      <h3>🏆 Programa de Fidelidade</h3>
+      <p class="small">Cada R$ 15,00 em compras gera 1 selo de fidelidade — a cada 10 selos (R$ 150) você ganha um brinde! 🎁</p>
+      <div id="fidelityControls" style="display:flex;gap:8px;align-items:center;margin-top:8px"></div>
+      <div id="fidelityContent" style="max-height:60vh;overflow:auto;margin-top:12px"></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:10px">
+        <button id="fidelityClose" class="btn-gray">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESUMO MENSAL modal -->
+  <div id="modalSummaryBack" class="modal-back">
+    <div class="modal" role="dialog" aria-modal="true" style="max-width:720px">
+      <h3>Resumo Mensal</h3>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label class="small" style="margin-right:6px">Mês</label>
+        <input id="summaryMonth" type="month" />
+        <button id="summaryGenerate" class="btn-yellow">Gerar</button>
+        <button id="summaryClose" class="btn-gray">Fechar</button>
+      </div>
+      <div id="summaryContent" style="margin-top:12px;max-height:60vh;overflow:auto"></div>
+    </div>
+  </div>
+
+  <!-- ===================================================
+       MODAL ESTOQUE MULTI-LOCAL v2  (NOVO)
+       =================================================== -->
+  <div id="modalStockV2Back" class="modal-back">
+    <div class="modal sv2-modal" role="dialog" aria-modal="true">
+      <div class="sv2-header">
+        <h3>📦 Gestão de Estoque</h3>
+        <div class="sv2-tabs">
+          <button type="button" class="sv2-tab active" data-tab="dashboard">📊 Dashboard</button>
+          <button type="button" class="sv2-tab" data-tab="locais">📍 Locais</button>
+          <button type="button" class="sv2-tab" data-tab="estoque">📦 Estoques</button>
+          <button type="button" class="sv2-tab" data-tab="historico">📋 Histórico</button>
+          <button type="button" class="sv2-tab" data-tab="custos">💰 Custos</button>
+        </div>
+        <button id="stockV2Close" class="btn-gray" type="button" style="margin-left:auto;white-space:nowrap">✕ Fechar</button>
+      </div>
+      <div id="sv2Content" class="sv2-content">
+        <div class="sv2-empty-msg" style="padding:40px;text-align:center">Carregando...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL ANALYTICS / RELATÓRIO DE VENDAS -->
+  <div id="modalAnalyticsBack" class="modal-back">
+    <div class="modal sv2-modal analytics-modal" role="dialog" aria-modal="true">
+      <div class="sv2-header">
+        <h3>📊 Relatório de Vendas</h3>
+        <div class="analytics-tabs sv2-tabs">
+          <button type="button" class="analytics-tab sv2-tab active" data-tab="overview">🏠 Visão Geral</button>
+          <button type="button" class="analytics-tab sv2-tab" data-tab="mensal">📅 Por Mês</button>
+          <button type="button" class="analytics-tab sv2-tab" data-tab="sabores">🍦 Sabores</button>
+          <button type="button" class="analytics-tab sv2-tab" data-tab="clientes">👥 Clientes</button>
+        </div>
+        <button id="analyticsClose" class="btn-gray" type="button" style="margin-left:auto;white-space:nowrap">✕ Fechar</button>
+      </div>
+      <div id="analyticsContent" class="sv2-content"></div>
+    </div>
+  </div>
+
+  <!-- modal PRODUTOS (Sabores, Tamanhos, Preços) -->
+  <div id="modalProdutosBack" class="modal-back">
+    <div class="modal sv2-modal produtos-modal" role="dialog" aria-modal="true">
+      <div class="sv2-header">
+        <h3>🍦 Cadastro de Produtos</h3>
+        <div class="sv2-tabs">
+          <button type="button" class="sv2-tab active" data-ptab="sabores">🍦 Sabores</button>
+          <button type="button" class="sv2-tab" data-ptab="tamanhos">📐 Tamanhos</button>
+          <button type="button" class="sv2-tab" data-ptab="precos">💰 Preços</button>
+        </div>
+        <button id="produtosClose" class="btn-gray" type="button" style="margin-left:auto;white-space:nowrap">✕ Fechar</button>
+      </div>
+      <div id="produtosContent" class="sv2-content"></div>
+    </div>
+  </div>
+
+  <!-- hidden file inputs -->
+  <input id="fileImportCSV" type="file" accept=".csv,text/csv" style="display:none" />
+  <input id="fileImportJSON" type="file" accept="application/json" style="display:none" />
+
+  <!-- configs e app -->
+  <script src="js/firebase-config.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
