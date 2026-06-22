@@ -8,6 +8,7 @@ const STOCK_KEY = "felito_stock_v_final_complete";
 const LAST_CLIENT_KEY = "felito_last_v1";
 const CLIENTS_KEY = "felito_clients_v1";
 const FIDELITY_KEY = "felito_fidelity_v1";
+const FIDELITY_CONFIG_KEY = "felito_fidelity_config_v1";
 const PACKAGING_KEY = "felito_packaging_v1";
 const PRODUCTS_KEY  = "felito_products_v1"; // novo: catálogo mestre
 
@@ -18,6 +19,19 @@ let stock = JSON.parse(localStorage.getItem(STOCK_KEY) || "{}");
 let lastClient = localStorage.getItem(LAST_CLIENT_KEY) || "";
 let clients = JSON.parse(localStorage.getItem(CLIENTS_KEY) || "[]"); // {id,name,phone}
 let fidelity = JSON.parse(localStorage.getItem(FIDELITY_KEY) || "{}"); // keyed by clientId
+// Configurações do programa de fidelidade
+let fidelityConfig = JSON.parse(localStorage.getItem(FIDELITY_CONFIG_KEY) || 'null') || {
+  stampValue: 15,   // R$ necessários para ganhar 1 selo
+  stampsPerGift: 10, // selos necessários para ganhar 1 brinde
+  windowDays: 90    // dias de validade dos selos (0 = sem prazo)
+};
+function saveFidelityConfig(){
+  localStorage.setItem(FIDELITY_CONFIG_KEY, JSON.stringify(fidelityConfig));
+  if(window.auth && auth.currentUser && window.db){
+    db.collection('meta').doc('fidelity_config').set(fidelityConfig, {merge:true})
+      .catch(e=>console.error('err fidelity config cloud',e));
+  }
+}
 // Custo de embalagem por tamanho (R$ por unidade)
 let packagingCosts = JSON.parse(localStorage.getItem(PACKAGING_KEY) || '{"240 mL":0.80,"480 mL":1.20,"1,5 L":2.50}');
 
@@ -254,6 +268,7 @@ function saveAllLocal(){
   localStorage.setItem(FIDELITY_KEY, JSON.stringify(fidelity));
   localStorage.setItem(PACKAGING_KEY, JSON.stringify(packagingCosts));
   localStorage.setItem(PRODUCTS_KEY, JSON.stringify(productsCatalog));
+  localStorage.setItem(FIDELITY_CONFIG_KEY, JSON.stringify(fidelityConfig));
 }
 
 /* small utility to show modals consistently and control z-index */
@@ -441,15 +456,22 @@ function populateClientsDatalist(){
 function ensureFidelityClientEntry(clientId){ if(!clientId) return; if(!fidelity[clientId]) fidelity[clientId] = { totalStamps: 0, gifts: [] }; }
 
 /* ── 90-day fidelity window ── */
-function cutoffDate90(){
-  const d = new Date(); d.setDate(d.getDate() - 90);
+function cutoffDateFidelity(){
+  const days = Number(fidelityConfig.windowDays) || 0;
+  if(days <= 0) return null; // sem prazo
+  const d = new Date(); d.setDate(d.getDate() - days);
   return d.toISOString().slice(0,10);
 }
-function isWithin90Days(item){
+function isWithinFidelityWindow(item){
+  const cutoff = cutoffDateFidelity();
+  if(!cutoff) return true; // sem prazo, sempre válido
   const d = item.data || item.date || '';
-  if(!d) return true; // se não tem data, inclui por cautela
-  return d >= cutoffDate90();
+  if(!d) return true;
+  return d >= cutoff;
 }
+// manter alias antigo para compatibilidade
+function cutoffDate90(){ return cutoffDateFidelity(); }
+function isWithin90Days(item){ return isWithinFidelityWindow(item); }
 
 function computeStampsFromOrdersForClient(clientId){
   const pedidoMap = {};
@@ -468,7 +490,7 @@ function computeStampsFromOrdersForClient(clientId){
   Object.keys(pedidoMap).forEach(pk => {
     const p = pedidoMap[pk];
     if(p.clientId === clientId){
-      total += Math.floor((Number(p.total)||0) / 15);
+      total += Math.floor((Number(p.total)||0) / (fidelityConfig.stampValue||15));
     }
   });
   return total;
@@ -486,7 +508,7 @@ function recalcFidelityForClient(clientId){
   const qtdResgates = items.filter(it => (it.clientId === clientId) && isResgateStatus(it.status)).length;
 
   // total de prêmios (vouchers) gerados pela soma de pedidos (antes dos resgates)
-  const desiredGifts = Math.floor(totalFromOrders / 10);
+  const desiredGifts = Math.floor(totalFromOrders / (fidelityConfig.stampsPerGift||10));
   const existingTotal = fidelity[clientId].gifts.length;
   if(desiredGifts > existingTotal){
     const toCreate = desiredGifts - existingTotal;
@@ -520,7 +542,7 @@ function rebuildFidelityFromItems(){
   const stampsPerClient = {};
   Object.keys(pedidoMap).forEach(pk=>{
     const p = pedidoMap[pk]; if(!p.clientId) return;
-    const stampsThisOrder = Math.floor((Number(p.total)||0) / 15);
+    const stampsThisOrder = Math.floor((Number(p.total)||0) / (fidelityConfig.stampValue||15));
     if(stampsThisOrder <= 0) return;
     stampsPerClient[p.clientId] = (stampsPerClient[p.clientId] || 0) + stampsThisOrder;
   });
@@ -535,7 +557,7 @@ function rebuildFidelityFromItems(){
     fidelity[cid].totalStamps = Math.max(0, computedTotalFromOrders - (qtdResgates * 10));
     fidelity[cid].stamps = fidelity[cid].totalStamps;
 
-    const desiredTotalGifts = Math.floor(computedTotalFromOrders / 10);
+    const desiredTotalGifts = Math.floor(computedTotalFromOrders / (fidelityConfig.stampsPerGift||10));
     const toCreate = Math.max(0, desiredTotalGifts - (fidelity[cid].gifts || []).length);
     for(let i=0;i<toCreate;i++) fidelity[cid].gifts.push({ id: 'gift-' + Date.now() + '-' + Math.floor(Math.random()*9999), createdAt: today(), status: 'Pendente', voucher: 'BRIND-' + Math.random().toString(36).slice(2,8).toUpperCase() });
   });
@@ -548,7 +570,7 @@ function addStampsToClient_forFinalize(clientId, stamps){
   if(!clientId || (stamps||0) <= 0) return [];
   ensureFidelityClientEntry(clientId);
   fidelity[clientId].totalStamps = (Number(fidelity[clientId].totalStamps)||0) + Math.floor(stamps);
-  const desiredTotalGifts = Math.floor((Number(fidelity[clientId].totalStamps) || 0) / 10);
+  const desiredTotalGifts = Math.floor((Number(fidelity[clientId].totalStamps) || 0) / (fidelityConfig.stampsPerGift||10));
   const existingTotalGifts = (fidelity[clientId].gifts || []).length;
   const toCreate = Math.max(0, desiredTotalGifts - existingTotalGifts);
   const created = [];
@@ -1401,15 +1423,95 @@ if(summaryGenerate) summaryGenerate.addEventListener('click', ()=>{
 
 /* ---------------- FIDELITY UI & controls ---------------- */
 function renderFidelityControls(){
-  fidelityControls.innerHTML = '';
-  const sortSel = document.createElement('select');
-  sortSel.innerHTML = `<option value="name-asc">Nome A→Z</option>\n                       <option value="name-desc">Nome Z→A</option>\n                       <option value="stamps-desc">Selos (maior)</option>\n                       <option value="stamps-asc">Selos (menor)</option>\n                       <option value="gifts-pending">Prêmios pendentes</option>`;
-  sortSel.value = fidelityLastSort || 'stamps-desc'; fidelityControls.appendChild(sortSel);
-  const filterInp = document.createElement('input'); filterInp.placeholder = 'Buscar cliente.'; filterInp.style.padding = '6px'; filterInp.style.borderRadius = '6px'; filterInp.style.border = '1px solid #ddd'; filterInp.style.marginLeft = '8px'; fidelityControls.appendChild(filterInp);
-  const btnRefresh = document.createElement('button'); btnRefresh.className='btn-gray'; btnRefresh.textContent='Atualizar'; btnRefresh.style.marginLeft='8px'; fidelityControls.appendChild(btnRefresh);
-  btnRefresh.addEventListener('click', ()=> { fidelityLastSort = sortSel.value; renderFidelityTable(sortSel.value, filterInp.value); });
-  sortSel.addEventListener('change', ()=> { fidelityLastSort = sortSel.value; renderFidelityTable(sortSel.value, filterInp.value); });
-  filterInp.addEventListener('input', ()=> renderFidelityTable(sortSel.value, filterInp.value));
+  if(!fidelityControls) return;
+  fidelityControls.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%">
+      <!-- Ordenação e busca -->
+      <select id="fidSortSel" style="padding:6px;border-radius:6px;border:1px solid #ddd">
+        <option value="name-asc">Nome A→Z</option>
+        <option value="name-desc">Nome Z→A</option>
+        <option value="stamps-desc">Selos (maior)</option>
+        <option value="stamps-asc">Selos (menor)</option>
+        <option value="gifts-pending">Prêmios pendentes</option>
+      </select>
+      <input id="fidFilterInp" placeholder="Buscar cliente..." style="padding:6px;border-radius:6px;border:1px solid #ddd;min-width:150px;flex:1"/>
+      <button type="button" class="btn-gray" id="fidBtnRefresh" style="padding:6px 12px">↻ Atualizar</button>
+
+      <!-- Config do programa -->
+      <button type="button" class="btn-gray" id="fidBtnConfigToggle" style="padding:6px 12px;margin-left:auto">⚙️ Configurar Programa</button>
+    </div>
+
+    <!-- Painel de configuração (oculto por padrão) -->
+    <div id="fidConfigPanel" style="display:none;width:100%;margin-top:10px;background:#fffdf7;border:1.5px solid var(--yellow);border-radius:10px;padding:14px">
+      <div style="font-weight:700;color:#012b29;margin-bottom:10px;font-size:0.9rem">⚙️ Configurações do Programa de Fidelidade</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;align-items:end">
+        <div>
+          <label class="small" style="font-weight:700">💰 Valor por Selo (R$)</label>
+          <div class="small muted" style="margin-bottom:4px">Quanto o cliente precisa comprar para ganhar 1 selo</div>
+          <input type="number" id="fidCfgStampValue" step="0.01" min="1" value="${fidelityConfig.stampValue||15}"
+            style="width:100%;padding:7px;border-radius:8px;border:1.5px solid var(--yellow);font-weight:700;font-size:1rem"/>
+        </div>
+        <div>
+          <label class="small" style="font-weight:700">🏷️ Selos por Brinde</label>
+          <div class="small muted" style="margin-bottom:4px">Quantos selos para ganhar 1 brinde</div>
+          <input type="number" id="fidCfgStampsPerGift" step="1" min="1" value="${fidelityConfig.stampsPerGift||10}"
+            style="width:100%;padding:7px;border-radius:8px;border:1.5px solid var(--yellow);font-weight:700;font-size:1rem"/>
+        </div>
+        <div>
+          <label class="small" style="font-weight:700">📅 Prazo de Vigência (dias)</label>
+          <div class="small muted" style="margin-bottom:4px">0 = sem prazo (selos não expiram)</div>
+          <input type="number" id="fidCfgWindowDays" step="1" min="0" value="${fidelityConfig.windowDays||0}"
+            style="width:100%;padding:7px;border-radius:8px;border:1.5px solid var(--yellow);font-weight:700;font-size:1rem"/>
+        </div>
+        <div style="display:flex;align-items:flex-end">
+          <button type="button" class="btn-yellow" id="fidBtnSaveConfig" style="width:100%;padding:9px">💾 Salvar Configurações</button>
+        </div>
+      </div>
+      <div class="small muted" style="margin-top:8px">
+        Configuração atual: cada <strong>R$ ${fidelityConfig.stampValue||15}</strong> = 1 selo · 
+        <strong>${fidelityConfig.stampsPerGift||10} selos</strong> = 1 brinde ·
+        ${(fidelityConfig.windowDays||0)>0?`Válido por <strong>${fidelityConfig.windowDays} dias</strong>`:'<strong>Sem prazo de validade</strong>'}
+      </div>
+    </div>`;
+
+  const sortSel = document.getElementById('fidSortSel');
+  const filterInp = document.getElementById('fidFilterInp');
+  if(sortSel) sortSel.value = fidelityLastSort || 'stamps-desc';
+
+  document.getElementById('fidBtnRefresh')?.addEventListener('click', ()=>{
+    fidelityLastSort = sortSel?.value || 'stamps-desc';
+    clients.forEach(c=>recalcFidelityForClient(c.id));
+    renderFidelityTable(fidelityLastSort, filterInp?.value||'');
+  });
+  sortSel?.addEventListener('change', ()=>{ fidelityLastSort=sortSel.value; renderFidelityTable(sortSel.value, filterInp?.value||''); });
+  filterInp?.addEventListener('input', ()=> renderFidelityTable(sortSel?.value||'stamps-desc', filterInp.value));
+
+  document.getElementById('fidBtnConfigToggle')?.addEventListener('click', ()=>{
+    const p=document.getElementById('fidConfigPanel');
+    if(p) p.style.display = p.style.display==='none'?'block':'none';
+  });
+
+  document.getElementById('fidBtnSaveConfig')?.addEventListener('click', ()=>{
+    const sv=parseFloat(document.getElementById('fidCfgStampValue')?.value);
+    const spg=parseInt(document.getElementById('fidCfgStampsPerGift')?.value);
+    const wd=parseInt(document.getElementById('fidCfgWindowDays')?.value);
+    if(isNaN(sv)||sv<1){alert('Valor por selo inválido');return;}
+    if(isNaN(spg)||spg<1){alert('Selos por brinde inválido');return;}
+    if(isNaN(wd)||wd<0){alert('Prazo de vigência inválido');return;}
+    fidelityConfig.stampValue=sv;
+    fidelityConfig.stampsPerGift=spg;
+    fidelityConfig.windowDays=wd;
+    saveFidelityConfig();
+    saveAllLocal();
+    // Recalcular todos os clientes com nova config
+    clients.forEach(c=>recalcFidelityForClient(c.id));
+    renderFidelityControls();
+    renderFidelityTable(fidelityLastSort,'');
+    const t=document.createElement('div');
+    t.textContent=`✅ Configurações salvas! R$ ${sv} = 1 selo · ${spg} selos = 1 brinde`;
+    t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#012b29;color:#f2efeb;padding:12px 24px;border-radius:10px;font-weight:700;z-index:999999;box-shadow:0 4px 16px rgba(0,0,0,0.3)';
+    document.body.appendChild(t);setTimeout(()=>t.remove(),3000);
+  });
 }
 
 function renderFidelityTable(sortBy = fidelityLastSort || 'stamps-desc', filterText = ''){
@@ -1827,6 +1929,7 @@ if(window.auth){
         await fetchLastPedidoSetNext();
         rebuildFidelityFromItems();
         if(window.__loadProductsCatalogFromCloud) window.__loadProductsCatalogFromCloud();
+        if(window.__loadFidelityConfigFromCloud) window.__loadFidelityConfigFromCloud();
         refreshAllProductSelects();
         renderTable();
       } else {
@@ -2289,20 +2392,22 @@ if(sv2Tabs){
 
 function openStockV2Modal(){
   ensureDefaultLocations();
-  currentStockTab = 'dashboard';
-  document.querySelectorAll('.sv2-tab').forEach(b => b.classList.toggle('active', b.getAttribute('data-tab') === 'dashboard'));
-  renderStockV2Tab('dashboard');
+  currentStockTab = 'visao';
+  document.querySelectorAll('.sv2-tab').forEach(b => b.classList.toggle('active', b.getAttribute('data-tab') === 'visao'));
+  renderStockV2Tab('visao');
   showModal(stockV2Modal);
 }
 
 function renderStockV2Tab(tab){
   if(!stockV2Content) return;
   switch(tab){
-    case 'dashboard':     stockV2Content.innerHTML = renderDashboard(); break;
-    case 'locais':        renderLocaisTab(); break;
-    case 'estoque':       renderEstoqueTab(); break;
-    case 'historico':     renderHistoricoTab(); break;
-    case 'custos':        renderCustosTab(); break;
+    case 'visao':        renderVisaoGeralTab(); break;
+    case 'producao':     renderProducaoTab(); break;
+    case 'movimentacao': renderMovimentacaoTab(); break;
+    // legacy aliases
+    case 'dashboard':    renderVisaoGeralTab(); break;
+    case 'estoque':      renderProducaoTab(); break;
+    case 'historico':    renderMovimentacaoTab(); break;
     default: stockV2Content.innerHTML = '';
   }
 }
@@ -3544,6 +3649,757 @@ function renderCustosTab(){
 
 
 
+/* ============================================================
+   ESTOQUE — NOVA ESTRUTURA CLEAN (3 abas)
+   ============================================================ */
+
+/* ---- ABA 1: VISÃO GERAL ---- */
+function renderVisaoGeralTab(){
+  ensureDefaultLocations();
+  const totalValueAll = locations.reduce((s,l)=>s+getTotalValueForLocation(l.id),0);
+  const totalQtyAll   = locations.reduce((s,l)=>s+getTotalQtyForLocation(l.id),0);
+  const TAM_ORDER = getActiveTamanhos().map(t=>t.name);
+  if(!TAM_ORDER.length) TAM_ORDER.push('240 mL','480 mL','1,5 L');
+
+  let html = `
+  <!-- KPIs compactos -->
+  <div class="sv2-summary-bar">
+    <div class="sv2-sum-card highlight">
+      <span class="sv2-sum-label">💰 Valor em Estoque</span>
+      <span class="sv2-sum-value">${formatBRL(totalValueAll)}</span>
+    </div>
+    <div class="sv2-sum-card">
+      <span class="sv2-sum-label">📦 Unidades Totais</span>
+      <span class="sv2-sum-value">${totalQtyAll}</span>
+    </div>
+    <div class="sv2-sum-card">
+      <span class="sv2-sum-label">📍 Locais</span>
+      <span class="sv2-sum-value">${locations.length}</span>
+    </div>
+    <div class="sv2-sum-card">
+      <span class="sv2-sum-label">🏭 Lotes</span>
+      <span class="sv2-sum-value">${productionBatches.length}</span>
+    </div>
+  </div>`;
+
+  // Tabela unificada de estoque por local
+  html += `<div style="background:#fff;border-radius:12px;border:1px solid #e0d9cf;overflow:hidden;margin-bottom:16px">
+    <div style="padding:12px 16px;background:#012b29;color:#f2efeb;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <span>📦 Estoque Atual por Local</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label style="font-size:0.8rem;opacity:0.8;color:#f2efeb">Local:</label>
+        <select id="vgLocSelect" style="padding:4px 8px;border-radius:6px;border:none;font-weight:700;font-size:0.85rem">
+          <option value="all">Todos</option>
+          ${locations.map(l=>`<option value="${l.id}">${l.name}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div style="overflow:auto" id="vgStockTableWrap">
+      ${buildVisaoEstoqueTable('all', TAM_ORDER)}
+    </div>
+  </div>`;
+
+  // Ações rápidas inline
+  html += `<div style="background:#fff;border-radius:12px;border:1px solid #e0d9cf;padding:16px;margin-bottom:16px">
+    <div style="font-weight:700;color:#012b29;margin-bottom:12px;font-size:0.95rem">⚡ Ajuste Rápido de Estoque</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;align-items:end">
+      <div>
+        <label class="small">Local</label>
+        <select id="vgAjLoc" style="width:100%;padding:7px;border-radius:8px;border:1px solid #ccc;margin-top:4px">
+          ${locations.map(l=>`<option value="${l.id}">${l.name}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="small">Sabor</label>
+        <select id="vgAjSabor" style="width:100%;padding:7px;border-radius:8px;border:1px solid #ccc;margin-top:4px">
+          ${getActiveSabores().map(s=>`<option>${s.name}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="small">Tamanho</label>
+        <select id="vgAjTam" style="width:100%;padding:7px;border-radius:8px;border:1px solid #ccc;margin-top:4px">
+          ${TAM_ORDER.map(t=>`<option>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="small">Nova Quantidade</label>
+        <input id="vgAjQty" type="number" min="0" placeholder="0" style="width:100%;padding:7px;border-radius:8px;border:1px solid #ccc;margin-top:4px" />
+      </div>
+      <div>
+        <button type="button" class="btn-yellow" id="vgBtnAjustar" style="width:100%;padding:8px">✏️ Ajustar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gestão de Locais compacta -->
+  <div style="background:#fff;border-radius:12px;border:1px solid #e0d9cf;padding:16px">
+    <div style="font-weight:700;color:#012b29;margin-bottom:10px;font-size:0.95rem">📍 Gerenciar Locais</div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+      ${locations.map(loc=>`
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#f8f5f0;border-radius:8px;border-left:4px solid ${loc.color}">
+          <span style="flex:1;font-weight:700;color:#012b29;font-size:0.9rem">${loc.name}${loc.isDefault?'<span class="sv2-default-badge" style="margin-left:6px">padrão</span>':''}</span>
+          <span class="small muted">${getTotalQtyForLocation(loc.id)} un · ${formatBRL(getTotalValueForLocation(loc.id))}</span>
+          ${!loc.isDefault?`<button type="button" class="small-btn btn-gray" data-act="vg-def" data-id="${loc.id}" style="font-size:0.72rem">Padrão</button>`:''}
+          <button type="button" class="small-btn btn-yellow" data-act="vg-edit" data-id="${loc.id}" style="font-size:0.72rem">✏️</button>
+          <button type="button" class="small-btn btn-red" data-act="vg-del" data-id="${loc.id}" style="font-size:0.72rem">✕</button>
+        </div>`).join('')}
+    </div>
+    <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <input id="vgNewLocName" placeholder="Nome do novo local" style="flex:1;min-width:160px;padding:7px;border-radius:8px;border:1px solid #ccc" />
+      <div style="display:flex;gap:4px" id="vgColorGrid">
+        ${LOC_COLORS.map((c,i)=>`<div class="sv2-color-swatch${i===0?' selected':''}" style="background:${c};width:22px;height:22px;border-radius:4px" data-color="${c}"></div>`).join('')}
+      </div>
+      <input type="hidden" id="vgNewLocColor" value="${LOC_COLORS[0]}" />
+      <button type="button" class="btn-yellow" id="vgBtnAddLoc" style="padding:7px 16px">+ Adicionar</button>
+    </div>
+  </div>`;
+
+  stockV2Content.innerHTML = html;
+
+  // Local filter
+  document.getElementById('vgLocSelect')?.addEventListener('change', e=>{
+    const wrap = document.getElementById('vgStockTableWrap');
+    if(wrap) wrap.innerHTML = buildVisaoEstoqueTable(e.target.value, TAM_ORDER);
+  });
+
+  // Ajuste rápido
+  document.getElementById('vgBtnAjustar')?.addEventListener('click', ()=>{
+    const locId = document.getElementById('vgAjLoc')?.value;
+    const sabor = document.getElementById('vgAjSabor')?.value;
+    const tam   = document.getElementById('vgAjTam')?.value;
+    const qty   = Number(document.getElementById('vgAjQty')?.value);
+    if(!locId||!sabor||!tam||isNaN(qty)||qty<0){alert('Preencha todos os campos');return;}
+    const res = doAjuste(locId,sabor,tam,qty,defaultPriceFor(sabor,tam),'Ajuste manual');
+    if(!res.ok){alert('Erro: '+res.msg);return;}
+    document.getElementById('vgAjQty').value='';
+    renderVisaoGeralTab();
+    const t=document.createElement('div');
+    t.textContent=`✅ Ajuste aplicado: ${sabor} ${tam} → ${qty} un`;
+    t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#012b29;color:#f2efeb;padding:12px 24px;border-radius:10px;font-weight:700;z-index:999999;box-shadow:0 4px 16px rgba(0,0,0,0.3)';
+    document.body.appendChild(t);setTimeout(()=>t.remove(),2500);
+  });
+
+  // Locais actions
+  document.querySelectorAll('[data-act="vg-def"]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      locations.forEach(l=>l.isDefault=(l.id===btn.getAttribute('data-id')));
+      saveStockV2Local();writeStockV2ToCloud();populateLocalSelect();renderVisaoGeralTab();
+    });
+  });
+  document.querySelectorAll('[data-act="vg-edit"]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const loc=findLocationById(btn.getAttribute('data-id'));if(!loc)return;
+      const n=prompt('Nome do local:',loc.name);if(!n||!n.trim())return;
+      loc.name=n.trim();saveStockV2Local();writeStockV2ToCloud();populateLocalSelect();renderVisaoGeralTab();
+    });
+  });
+  document.querySelectorAll('[data-act="vg-del"]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      if(locations.length<=1){alert('Precisa ter pelo menos 1 local.');return;}
+      const loc=findLocationById(btn.getAttribute('data-id'));
+      const qty=getTotalQtyForLocation(btn.getAttribute('data-id'));
+      if(qty>0&&!confirm(`"${loc?.name}" tem ${qty} unidades. Apagar mesmo assim?`))return;
+      if(!confirm(`Apagar local "${loc?.name}"?`))return;
+      Object.keys(stockV2).forEach(k=>{if(k.startsWith(btn.getAttribute('data-id')+'||'))delete stockV2[k];});
+      locations=locations.filter(l=>l.id!==btn.getAttribute('data-id'));
+      if(!locations.find(l=>l.isDefault)&&locations.length)locations[0].isDefault=true;
+      saveStockV2Local();writeStockV2ToCloud();populateLocalSelect();renderVisaoGeralTab();
+    });
+  });
+
+  // Color swatches
+  document.querySelectorAll('#vgColorGrid .sv2-color-swatch').forEach(sw=>{
+    sw.addEventListener('click',()=>{
+      document.querySelectorAll('#vgColorGrid .sv2-color-swatch').forEach(s=>s.classList.remove('selected'));
+      sw.classList.add('selected');
+      const ci=document.getElementById('vgNewLocColor');if(ci)ci.value=sw.getAttribute('data-color');
+    });
+  });
+  document.getElementById('vgBtnAddLoc')?.addEventListener('click',()=>{
+    const name=(document.getElementById('vgNewLocName')?.value||'').trim();
+    if(!name){alert('Digite o nome do local');return;}
+    if(locations.find(l=>l.name.toLowerCase()===name.toLowerCase())){alert('Local já existe');return;}
+    const color=document.getElementById('vgNewLocColor')?.value||LOC_COLORS[0];
+    locations.push({id:newLocId(name),name,color,isDefault:false});
+    saveStockV2Local();writeStockV2ToCloud();populateLocalSelect();renderVisaoGeralTab();
+  });
+}
+
+function buildVisaoEstoqueTable(filterLocId, TAM_ORDER){
+  const locs = filterLocId==='all' ? locations : locations.filter(l=>l.id===filterLocId);
+  const sabores = getActiveSabores().map(s=>s.name);
+  if(!sabores.length) return '<div class="sv2-empty-msg" style="padding:16px">Sem sabores cadastrados.</div>';
+
+  // Collect all rows with stock > 0
+  const rows = [];
+  locs.forEach(loc=>{
+    sabores.forEach(sabor=>{
+      TAM_ORDER.forEach(tam=>{
+        const e=stockV2[sv2Key(loc.id,sabor,tam)];
+        if(e&&Number(e.qty)>0) rows.push({loc,sabor,tam,qty:e.qty,vu:e.valueUnit||0});
+      });
+    });
+  });
+
+  if(!rows.length) return `<div class="sv2-empty-msg" style="padding:20px;text-align:center">Nenhum item em estoque. Use a aba 🏭 Produção para lançar.</div>`;
+
+  let html = `<table style="width:100%;border-collapse:collapse;min-width:420px">
+    <thead><tr>
+      ${filterLocId==='all'?'<th style="padding:8px 12px;background:#efe9de;text-align:left">Local</th>':''}
+      <th style="padding:8px 12px;background:#efe9de;text-align:left">Sabor</th>
+      <th style="padding:8px 12px;background:#efe9de">Tamanho</th>
+      <th style="padding:8px 12px;background:#efe9de;text-align:right">Qtd</th>
+      <th style="padding:8px 12px;background:#efe9de;text-align:right">Valor Unit.</th>
+      <th style="padding:8px 12px;background:#efe9de;text-align:right">Total</th>
+    </tr></thead><tbody>`;
+
+  rows.forEach(r=>{
+    html+=`<tr style="border-bottom:1px solid #f0ebe3">
+      ${filterLocId==='all'?`<td style="padding:8px 12px"><span style="display:inline-flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:${r.loc.color}"></span>${r.loc.name}</span></td>`:''}
+      <td style="padding:8px 12px;font-weight:600">${r.sabor}</td>
+      <td style="padding:8px 12px;text-align:center">${r.tam}</td>
+      <td style="padding:8px 12px;text-align:right;font-weight:800;color:#012b29">${r.qty}</td>
+      <td style="padding:8px 12px;text-align:right">${formatBRL(r.vu)}</td>
+      <td style="padding:8px 12px;text-align:right"><span class="sv2-val-pill">${formatBRL(r.qty*r.vu)}</span></td>
+    </tr>`;
+  });
+  const totalQty=rows.reduce((s,r)=>s+r.qty,0);
+  const totalVal=rows.reduce((s,r)=>s+(r.qty*r.vu),0);
+  html+=`<tr style="background:#efe9de;font-weight:800">
+    ${filterLocId==='all'?'<td style="padding:8px 12px">Total</td>':'<td style="padding:8px 12px">Total</td>'}
+    <td colspan="${filterLocId==='all'?2:1}" style="padding:8px 12px"></td>
+    <td style="padding:8px 12px;text-align:right">${totalQty}</td>
+    <td style="padding:8px 12px"></td>
+    <td style="padding:8px 12px;text-align:right">${formatBRL(totalVal)}</td>
+  </tr>`;
+  html+=`</tbody></table>`;
+  return html;
+}
+
+/* ---- ABA 2: PRODUÇÃO ---- */
+function renderProducaoTab(filterLoc){
+  ensureDefaultLocations();
+  const sabores  = getActiveSabores().map(s=>s.name);
+  const tamanhos = getActiveTamanhos().map(t=>t.name);
+  if(!tamanhos.length){tamanhos.push('240 mL','480 mL','1,5 L');}
+  const selLocId = filterLoc || sv2LastEstoqueLoc || (getDefaultLocation()?.id) || (locations[0]?.id);
+  sv2LastEstoqueLoc = selLocId;
+
+  /* cart helper */
+  function buildCartHTML(){
+    if(!sv2EntranceCart.length) return `<div class="sv2-empty-msg" style="padding:10px 0">Nenhum produto adicionado ainda.</div>`;
+    const totalCostPreview=parseFloat(document.getElementById('prodLoteCusto')?.value)||0;
+    const qtysMap={};
+    sv2EntranceCart.forEach(it=>{qtysMap[it.tam]=(qtysMap[it.tam]||0)+it.qty;});
+    const costsPreview=totalCostPreview>0?calcBatchCosts(totalCostPreview,qtysMap):null;
+    let totalValor=0;
+    sv2EntranceCart.forEach(it=>{totalValor+=it.qty*(it.precoUnit||0);});
+    let h=`<table style="width:100%;border-collapse:collapse;font-size:0.88rem">
+      <thead><tr>
+        <th style="padding:6px;background:#efe9de;text-align:left">Sabor</th>
+        <th style="padding:6px;background:#efe9de">Tam.</th>
+        <th style="padding:6px;background:#efe9de;text-align:right">Qtd</th>
+        <th style="padding:6px;background:#efe9de;text-align:right">Preço Unit.</th>
+        ${costsPreview?'<th style="padding:6px;background:#efe9de;text-align:right">Custo Unit.</th>':''}
+        <th style="padding:6px;background:#efe9de"></th>
+      </tr></thead><tbody>`;
+    sv2EntranceCart.forEach((item,idx)=>{
+      const custoUnit=costsPreview?costsPreview[item.tam]:null;
+      h+=`<tr>
+        <td style="padding:6px;border-bottom:1px solid #eee">${item.sabor}</td>
+        <td style="padding:6px;border-bottom:1px solid #eee;text-align:center">${item.tam}</td>
+        <td style="padding:6px;border-bottom:1px solid #eee;text-align:right;font-weight:700">${item.qty}</td>
+        <td style="padding:6px;border-bottom:1px solid #eee;text-align:right">
+          <input type="number" step="0.01" value="${(item.precoUnit||0).toFixed(2)}"
+            data-idx="${idx}" data-field="precoUnit"
+            style="width:70px;padding:3px 5px;border-radius:5px;border:1px solid #ccc;text-align:right;font-size:0.85rem"/>
+        </td>
+        ${costsPreview?`<td style="padding:6px;border-bottom:1px solid #eee;text-align:right;color:#166534;font-weight:700">${custoUnit?formatBRL(custoUnit):'—'}</td>`:''}
+        <td style="padding:6px;border-bottom:1px solid #eee;text-align:center">
+          <button type="button" class="small-btn btn-red" data-act="rem-cart" data-idx="${idx}" style="padding:3px 7px">✕</button>
+        </td>
+      </tr>`;
+    });
+    h+=`<tr style="font-weight:800;background:#f8f5ef">
+      <td colspan="${costsPreview?3:3}" style="padding:6px">Total</td>
+      <td style="padding:6px;text-align:right">${formatBRL(totalValor)}</td>
+      ${costsPreview?'<td></td>':''}
+      <td></td>
+    </tr></tbody></table>`;
+    return h;
+  }
+
+  /* Sorted batches */
+  const sortedBatches=productionBatches.slice().sort((a,b)=>(b.loteNum||0)-(a.loteNum||0));
+
+  let html=`
+  <!-- Destino do lote -->
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+    <label class="small" style="font-weight:700">📍 Local de destino:</label>
+    <select id="prodLocSelect" style="padding:7px 12px;border-radius:8px;border:1.5px solid var(--yellow);font-weight:700">
+      ${locations.map(l=>`<option value="${l.id}"${l.id===selLocId?' selected':''}>${l.name}</option>`).join('')}
+    </select>
+    <span class="small muted">Estoque atual: <strong>${getTotalQtyForLocation(selLocId)} un · ${formatBRL(getTotalValueForLocation(selLocId))}</strong></span>
+  </div>
+
+  <!-- Formulário de lançamento de lote -->
+  <div style="background:#fffdf7;border:2px solid var(--yellow);border-radius:12px;padding:16px;margin-bottom:16px">
+    <div style="font-weight:700;color:#012b29;margin-bottom:12px;font-size:0.95rem">🏭 Lançar Novo Lote de Produção</div>
+
+    <!-- Cabeçalho do lote -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #e0d9cf">
+      <div>
+        <label class="small" style="font-weight:700">Nº do Lote</label>
+        <input id="prodLoteNum" type="number" min="1" value="${nextBatchNum}"
+          style="width:100%;padding:7px;border-radius:8px;border:1.5px solid var(--yellow);font-weight:800;font-size:1rem;margin-top:4px"/>
+      </div>
+      <div>
+        <label class="small" style="font-weight:700">Data de Produção</label>
+        <input id="prodLoteData" type="date" value="${today()}"
+          style="width:100%;padding:7px;border-radius:8px;border:1px solid #ccc;margin-top:4px"/>
+      </div>
+      <div>
+        <label class="small" style="font-weight:700">💰 Custo Total (R$)</label>
+        <input id="prodLoteCusto" type="number" step="0.01" min="0" placeholder="Ex: 180.00"
+          style="width:100%;padding:7px;border-radius:8px;border:1.5px solid #86efac;font-weight:700;background:#f0fff4;margin-top:4px"/>
+      </div>
+      <div>
+        <label class="small" style="font-weight:700">Observação</label>
+        <input id="prodLoteNota" type="text" placeholder="Opcional"
+          style="width:100%;padding:7px;border-radius:8px;border:1px solid #ccc;margin-top:4px"/>
+      </div>
+    </div>
+
+    <!-- Adicionar produto ao lote -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;align-items:end;margin-bottom:12px">
+      <div>
+        <label class="small">Sabor</label>
+        <select id="prodEntSabor" style="width:100%;padding:7px;border-radius:8px;border:1px solid #ccc;margin-top:4px">
+          ${sabores.map(s=>`<option>${s}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="small">Tamanho</label>
+        <select id="prodEntTam" style="width:100%;padding:7px;border-radius:8px;border:1px solid #ccc;margin-top:4px">
+          ${tamanhos.map(t=>`<option>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="small">Qtd Produzida</label>
+        <input id="prodEntQty" type="number" min="1" value="1" style="width:100%;padding:7px;border-radius:8px;border:1px solid #ccc;margin-top:4px"/>
+      </div>
+      <div>
+        <label class="small">Preço Unit. Venda (R$)</label>
+        <input id="prodEntPreco" type="number" step="0.01" placeholder="Auto" style="width:100%;padding:7px;border-radius:8px;border:1px solid #ccc;margin-top:4px"/>
+      </div>
+      <div style="display:flex;align-items:flex-end">
+        <button type="button" id="prodBtnAdd" class="btn-yellow" style="width:100%;padding:8px">+ Adicionar</button>
+      </div>
+    </div>
+
+    <!-- Carrinho do lote -->
+    <div id="prodCartSection">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <strong style="font-size:0.88rem">Produtos (${sv2EntranceCart.length})</strong>
+        ${sv2EntranceCart.length?`<div style="display:flex;gap:6px">
+          <button type="button" id="prodBtnConfirm" class="btn-green" style="white-space:nowrap;padding:6px 14px">✓ Confirmar Lote</button>
+          <button type="button" id="prodBtnClear" class="btn-gray" style="padding:5px 10px;font-size:0.82rem">Limpar</button>
+        </div>`:''}
+      </div>
+      <div id="prodCartList">${buildCartHTML()}</div>
+      ${sv2EntranceCart.length?`<div id="prodCustoPreview" style="margin-top:8px;padding:8px 12px;background:#f0fff4;border-radius:8px;font-size:0.84rem;color:#166534"></div>`:''}
+    </div>
+  </div>
+
+  <!-- Histórico de lotes -->
+  <div style="background:#fff;border-radius:12px;border:1px solid #e0d9cf;padding:16px">
+    <div style="font-weight:700;color:#012b29;margin-bottom:12px;font-size:0.95rem;display:flex;align-items:center;justify-content:space-between">
+      <span>📋 Histórico de Lotes (${productionBatches.length})</span>
+    </div>
+    ${sortedBatches.length?sortedBatches.map(b=>{
+      const bc=b.totalCost>0?calcBatchCosts(b.totalCost,b.qtys):null;
+      const hasCost=b.totalCost>0;
+      const bItems=b.items||[];
+      const totalValorLote=bItems.reduce((s,it)=>s+(it.valorTotal||(it.qty*(it.precoUnit||0))),0);
+      const locName=findLocationById(b.locId)?.name||'—';
+      return `<div style="border:1px solid #e0d9cf;border-radius:10px;margin-bottom:10px;overflow:hidden">
+        <div style="background:#012b29;color:#f2efeb;padding:10px 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+          <span style="font-weight:800">🏭 Lote ${b.loteNum||'?'}</span>
+          <span style="opacity:0.75;font-size:0.85rem">${b.date||''}</span>
+          <span style="opacity:0.7;font-size:0.82rem">📍 ${locName}</span>
+          ${b.note?`<span style="opacity:0.65;font-size:0.8rem;font-style:italic">${b.note}</span>`:''}
+          <span style="margin-left:auto;background:${hasCost?'#e9b42e':'#666'};color:${hasCost?'#012b29':'#fff'};padding:2px 8px;border-radius:5px;font-size:0.8rem;font-weight:700">${hasCost?formatBRL(b.totalCost):'Sem custo'}</span>
+          <button type="button" class="small-btn" data-act="edit-batch" data-id="${b.id}" style="background:#e9b42e;color:#012b29;padding:3px 8px;border-radius:5px;font-size:0.75rem">✏️</button>
+          <button type="button" class="small-btn btn-red" data-act="del-batch" data-id="${b.id}" style="padding:3px 7px;font-size:0.75rem">✕</button>
+        </div>
+        ${bItems.length?`<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem">
+          <thead><tr style="background:#f8f5ef">
+            <th style="padding:6px 10px;text-align:left">Sabor</th>
+            <th style="padding:6px 10px">Tam.</th>
+            <th style="padding:6px 10px;text-align:right">Qtd</th>
+            <th style="padding:6px 10px;text-align:right">Preço Unit.</th>
+            ${bc?'<th style="padding:6px 10px;text-align:right">Custo Unit.</th>':''}
+          </tr></thead><tbody>
+          ${bItems.map(it=>{
+            const custoU=bc?(bc[it.tam]||0):(it.custoUnit||null);
+            const precoU=it.precoUnit||defaultPriceFor(it.sabor,it.tam);
+            return `<tr style="border-bottom:1px solid #f0ebe3">
+              <td style="padding:6px 10px">${it.sabor||'—'}</td>
+              <td style="padding:6px 10px;text-align:center">${it.tam||'—'}</td>
+              <td style="padding:6px 10px;text-align:right;font-weight:700">${it.qty||0}</td>
+              <td style="padding:6px 10px;text-align:right">${formatBRL(precoU)}</td>
+              ${bc?`<td style="padding:6px 10px;text-align:right;color:#166534;font-weight:700">${custoU?formatBRL(custoU):'—'}</td>`:''}
+            </tr>`;
+          }).join('')}
+          <tr style="background:#efe9de;font-weight:800">
+            <td colspan="${bc?3:3}" style="padding:6px 10px">Total do lote</td>
+            <td style="padding:6px 10px;text-align:right">${formatBRL(totalValorLote)}</td>
+            ${bc?`<td style="padding:6px 10px;text-align:right">${formatBRL(b.totalCost)}</td>`:''}
+          </tr></tbody></table></div>`:
+          `<div style="padding:10px 14px;color:#8a877c;font-style:italic;font-size:0.84rem">Sem itens detalhados.</div>`}
+      </div>`;
+    }).join(''):`<div class="sv2-empty-msg" style="padding:20px">Nenhum lote registrado ainda.</div>`}
+  </div>
+
+  <!-- Modal edição de lote inline -->
+  <div id="editBatchModal" style="display:none;position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,0.55);z-index:999999;align-items:center;justify-content:center">
+    <div style="background:#fff;border-radius:14px;padding:24px;max-width:440px;width:92vw;box-shadow:0 8px 32px rgba(0,0,0,0.35)">
+      <h3 style="margin:0 0 16px;color:#012b29">✏️ Editar Lote</h3>
+      <input type="hidden" id="editBatchId"/>
+      <div style="display:grid;gap:10px">
+        <div><label class="small" style="font-weight:700">Nº do Lote</label><input type="number" id="editBatchLoteNum" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ccc;margin-top:4px"/></div>
+        <div><label class="small" style="font-weight:700">Data</label><input type="date" id="editBatchDate" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ccc;margin-top:4px"/></div>
+        <div><label class="small" style="font-weight:700">Custo Total (R$)</label><input type="number" step="0.01" id="editBatchCost" style="width:100%;padding:8px;border-radius:8px;border:1.5px solid #86efac;background:#f0fff4;font-weight:700;margin-top:4px"/></div>
+        <div><label class="small" style="font-weight:700">Observação</label><input type="text" id="editBatchNote" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ccc;margin-top:4px"/></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button type="button" id="editBatchSave" class="btn-yellow">💾 Salvar</button>
+        <button type="button" id="editBatchCancel" class="btn-gray">Cancelar</button>
+      </div>
+    </div>
+  </div>`;
+
+  stockV2Content.innerHTML = html;
+
+  // Local filter
+  document.getElementById('prodLocSelect')?.addEventListener('change',e=>{
+    sv2EntranceCart=[];
+    renderProducaoTab(e.target.value);
+  });
+
+  // Auto-fill price
+  function autoFill(){
+    const s=document.getElementById('prodEntSabor')?.value;
+    const t=document.getElementById('prodEntTam')?.value;
+    const pe=document.getElementById('prodEntPreco');
+    if(pe&&!pe.value&&s&&t) pe.placeholder=formatBRL(defaultPriceFor(s,t)).replace('R$ ','');
+  }
+  document.getElementById('prodEntSabor')?.addEventListener('change',autoFill);
+  document.getElementById('prodEntTam')?.addEventListener('change',autoFill);
+  autoFill();
+
+  // Custo preview
+  function updateCustoPreview(){
+    const totalCost=parseFloat(document.getElementById('prodLoteCusto')?.value)||0;
+    const prev=document.getElementById('prodCustoPreview');
+    const cl=document.getElementById('prodCartList');
+    if(cl&&sv2EntranceCart.length) cl.innerHTML=buildCartHTML();
+    if(!prev||!sv2EntranceCart.length)return;
+    if(!totalCost){prev.innerHTML='<em>Informe o custo total para ver o custo por unidade.</em>';return;}
+    const qtys={};
+    sv2EntranceCart.forEach(it=>{qtys[it.tam]=(qtys[it.tam]||0)+it.qty;});
+    const costs=calcBatchCosts(totalCost,qtys);
+    if(!costs){prev.innerHTML='';return;}
+    const parts=Object.keys(qtys).filter(t=>qtys[t]>0).map(t=>`<strong>${t}</strong>: ${formatBRL(costs[t])}`);
+    prev.innerHTML=`<strong>⚡ Custo por unidade:</strong> ${parts.join(' · ')}`;
+  }
+  document.getElementById('prodLoteCusto')?.addEventListener('input',updateCustoPreview);
+
+  // Add to cart
+  document.getElementById('prodBtnAdd')?.addEventListener('click',()=>{
+    const sabor=document.getElementById('prodEntSabor')?.value;
+    const tam=document.getElementById('prodEntTam')?.value;
+    const qty=Number(document.getElementById('prodEntQty')?.value)||0;
+    if(!sabor||!tam||qty<=0){alert('Quantidade inválida');return;}
+    const pv=parseFloat(document.getElementById('prodEntPreco')?.value);
+    const precoUnit=(!isNaN(pv)&&pv>0)?pv:defaultPriceFor(sabor,tam);
+    const ex=sv2EntranceCart.find(c=>c.sabor===sabor&&c.tam===tam);
+    if(ex)ex.qty+=qty;
+    else sv2EntranceCart.push({sabor,tam,qty,precoUnit});
+    document.getElementById('prodEntQty').value=1;
+    const pe=document.getElementById('prodEntPreco');if(pe)pe.value='';
+    renderProducaoTab(selLocId);
+  });
+
+  // Cart inline precoUnit edit
+  document.getElementById('prodCartList')?.addEventListener('input',ev=>{
+    const inp=ev.target.closest('input[data-field="precoUnit"]');
+    if(!inp)return;
+    const idx=Number(inp.getAttribute('data-idx'));
+    if(sv2EntranceCart[idx])sv2EntranceCart[idx].precoUnit=parseFloat(inp.value)||0;
+    updateCustoPreview();
+  });
+
+  // Cart remove
+  document.getElementById('prodCartList')?.addEventListener('click',ev=>{
+    const btn=ev.target.closest('button[data-act="rem-cart"]');
+    if(!btn)return;
+    sv2EntranceCart.splice(Number(btn.getAttribute('data-idx')),1);
+    renderProducaoTab(selLocId);
+  });
+
+  document.getElementById('prodBtnClear')?.addEventListener('click',()=>{sv2EntranceCart=[];renderProducaoTab(selLocId);});
+
+  // Confirm lote
+  document.getElementById('prodBtnConfirm')?.addEventListener('click',async()=>{
+    if(!sv2EntranceCart.length)return;
+    const loteNum=Number(document.getElementById('prodLoteNum')?.value)||nextBatchNum;
+    const loteData=document.getElementById('prodLoteData')?.value||today();
+    const custTotal=parseFloat(document.getElementById('prodLoteCusto')?.value)||0;
+    const nota=document.getElementById('prodLoteNota')?.value||'';
+    const locId=selLocId;
+    if(custTotal<=0&&!confirm('Sem custo de produção. Deseja continuar?'))return;
+    const qtys={};
+    sv2EntranceCart.forEach(it=>{qtys[it.tam]=(qtys[it.tam]||0)+it.qty;});
+    const costs=custTotal>0?calcBatchCosts(custTotal,qtys):null;
+    sv2EntranceCart.forEach(item=>{
+      const vu=costs?costs[item.tam]:defaultPriceFor(item.sabor,item.tam);
+      doEntrada(locId,item.sabor,item.tam,item.qty,vu,`Lote ${loteNum}`);
+    });
+    const batch={
+      id:'lote-'+Date.now(),loteNum,date:loteData,totalCost:custTotal,qtys,
+      items:sv2EntranceCart.map(it=>({sabor:it.sabor,tam:it.tam,qty:it.qty,
+        precoUnit:it.precoUnit||defaultPriceFor(it.sabor,it.tam),
+        valorTotal:it.qty*(it.precoUnit||defaultPriceFor(it.sabor,it.tam)),
+        custoUnit:costs?(costs[it.tam]||0):null})),
+      note:nota,locId,costs:costs||null,_createdAt:new Date().toISOString()
+    };
+    productionBatches.push(batch);
+    if(loteNum>=nextBatchNum)nextBatchNum=loteNum+1;
+    await writeProductionBatchToCloud(batch);
+    if(window.db&&window.auth?.currentUser)
+      db.collection('meta').doc('producao_meta').set({nextBatchNum},{merge:true}).catch(e=>console.error(e));
+    const totalQty=sv2EntranceCart.reduce((s,c)=>s+c.qty,0);
+    sv2EntranceCart=[];
+    renderProducaoTab(locId);
+    const t=document.createElement('div');
+    t.innerHTML=`✅ Lote ${loteNum} registrado! ${totalQty} unidades → "${findLocationById(locId)?.name}"`;
+    t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#012b29;color:#f2efeb;padding:12px 24px;border-radius:10px;font-weight:700;z-index:999999;box-shadow:0 4px 16px rgba(0,0,0,0.3);max-width:90vw;text-align:center';
+    document.body.appendChild(t);setTimeout(()=>t.remove(),3500);
+  });
+
+  // Edit/Delete batch delegation
+  stockV2Content.addEventListener('click',ev=>{
+    const editBtn=ev.target.closest('button[data-act="edit-batch"]');
+    if(editBtn){
+      const id=editBtn.getAttribute('data-id');
+      const b=productionBatches.find(x=>x.id===id);if(!b)return;
+      document.getElementById('editBatchId').value=id;
+      document.getElementById('editBatchLoteNum').value=b.loteNum||'';
+      document.getElementById('editBatchDate').value=b.date||today();
+      document.getElementById('editBatchCost').value=b.totalCost||0;
+      document.getElementById('editBatchNote').value=b.note||'';
+      document.getElementById('editBatchModal').style.display='flex';
+      return;
+    }
+    const delBtn=ev.target.closest('button[data-act="del-batch"]');
+    if(delBtn){
+      const id=delBtn.getAttribute('data-id');
+      const b=productionBatches.find(x=>x.id===id);
+      if(!confirm('Excluir Lote '+(b?.loteNum||'?')+'?'))return;
+      productionBatches=productionBatches.filter(x=>x.id!==id);
+      deleteProductionBatchFromCloud(id);
+      renderProducaoTab(selLocId);
+    }
+  });
+
+  document.getElementById('editBatchCancel')?.addEventListener('click',()=>{document.getElementById('editBatchModal').style.display='none';});
+  document.getElementById('editBatchSave')?.addEventListener('click',()=>{
+    const id=document.getElementById('editBatchId')?.value;
+    const b=productionBatches.find(x=>x.id===id);if(!b)return;
+    const loteNum=Number(document.getElementById('editBatchLoteNum')?.value)||b.loteNum;
+    const date=document.getElementById('editBatchDate')?.value||b.date;
+    const totalCost=parseFloat(document.getElementById('editBatchCost')?.value)||0;
+    const note=document.getElementById('editBatchNote')?.value||'';
+    const costs=totalCost>0?calcBatchCosts(totalCost,b.qtys):null;
+    b.loteNum=loteNum;b.date=date;b.totalCost=totalCost;b.note=note;b.costs=costs;
+    if(b.items&&costs)b.items.forEach(it=>{it.custoUnit=costs[it.tam]||null;});
+    updateProductionBatchInCloud(id,{loteNum,date,totalCost,note,qtys:b.qtys,costs,items:b.items});
+    document.getElementById('editBatchModal').style.display='none';
+    renderProducaoTab(selLocId);
+  });
+}
+
+/* ---- ABA 3: MOVIMENTAÇÃO (Transferências + Histórico) ---- */
+function renderMovimentacaoTab(){
+  ensureDefaultLocations();
+  const sabores=getActiveSabores().map(s=>s.name);
+  const tamanhos=getActiveTamanhos().map(t=>t.name);
+  if(!tamanhos.length){tamanhos.push('240 mL','480 mL','1,5 L');}
+  const fromDef=getDefaultLocation();
+  const toDef=locations.find(l=>!l.isDefault)||locations[1]||fromDef;
+
+  // Histórico recente
+  const recentTransfers=transfers.slice().reverse().slice(0,100);
+
+  let html=`
+  <!-- Formulário de transferência -->
+  <div style="background:#fff;border-radius:12px;border:2px solid #e0d9cf;padding:16px;margin-bottom:16px">
+    <div style="font-weight:700;color:#012b29;margin-bottom:14px;font-size:0.95rem">↔️ Transferir Estoque entre Locais</div>
+
+    <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;margin-bottom:12px">
+      <div>
+        <label class="small" style="font-weight:700">De (origem)</label>
+        <select id="movTrFrom" style="width:100%;padding:8px;border-radius:8px;border:1.5px solid #dc2626;margin-top:4px;font-weight:700">
+          ${locations.map(l=>`<option value="${l.id}"${l.id===fromDef?.id?' selected':''}>${l.name}</option>`).join('')}
+        </select>
+      </div>
+      <div style="text-align:center;font-size:1.5rem;color:#012b29;padding-top:20px">→</div>
+      <div>
+        <label class="small" style="font-weight:700">Para (destino)</label>
+        <select id="movTrTo" style="width:100%;padding:8px;border-radius:8px;border:1.5px solid #16a34a;margin-top:4px;font-weight:700">
+          ${locations.map(l=>`<option value="${l.id}"${l.id===toDef?.id?' selected':''}>${l.name}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;align-items:end;margin-bottom:12px">
+      <div>
+        <label class="small">Sabor</label>
+        <select id="movTrSabor" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;margin-top:4px">
+          ${sabores.map(s=>`<option>${s}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="small">Tamanho</label>
+        <select id="movTrTam" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;margin-top:4px">
+          ${tamanhos.map(t=>`<option>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="small">Quantidade</label>
+        <input id="movTrQty" type="number" min="1" value="1" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;margin-top:4px"/>
+      </div>
+      <div>
+        <label class="small">Observação (opcional)</label>
+        <input id="movTrNota" placeholder="Ex: Reabastecimento" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;margin-top:4px"/>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <button type="button" class="btn-yellow" id="movBtnTransfer" style="padding:10px 24px">↔️ Transferir</button>
+      <span id="movTrPreview" class="small muted"></span>
+    </div>
+  </div>
+
+  <!-- Histórico de movimentações -->
+  <div style="background:#fff;border-radius:12px;border:1px solid #e0d9cf;padding:16px">
+    <div style="font-weight:700;color:#012b29;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <span>📋 Histórico de Movimentações (${transfers.length})</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="movHistType" style="padding:5px 8px;border-radius:6px;border:1px solid #ddd;font-size:0.82rem">
+          <option value="all">Todos</option>
+          <option value="transfer">Transferências</option>
+          <option value="entrada">Entradas</option>
+          <option value="venda">Vendas</option>
+          <option value="ajuste">Ajustes</option>
+        </select>
+        <button type="button" class="small-btn btn-gray" id="movHistFilter">Filtrar</button>
+      </div>
+    </div>
+    <div id="movHistContent">
+      ${buildHistoricoHTML(recentTransfers)}
+    </div>
+  </div>`;
+
+  stockV2Content.innerHTML=html;
+
+  // Live preview disponível
+  function updatePreview(){
+    const fromId=document.getElementById('movTrFrom')?.value;
+    const sabor=document.getElementById('movTrSabor')?.value;
+    const tam=document.getElementById('movTrTam')?.value;
+    if(!fromId||!sabor||!tam)return;
+    const avail=stockV2[sv2Key(fromId,sabor,tam)]?.qty||0;
+    const prev=document.getElementById('movTrPreview');
+    if(prev){
+      const fromName=findLocationById(fromId)?.name||fromId;
+      prev.innerHTML=`Disponível em <strong>"${fromName}"</strong>: <strong>${avail} unidades</strong>`;
+      prev.style.color=avail>0?'#166534':'#dc2626';
+    }
+  }
+  ['movTrFrom','movTrSabor','movTrTam'].forEach(id=>document.getElementById(id)?.addEventListener('change',updatePreview));
+  updatePreview();
+
+  // Transfer button
+  document.getElementById('movBtnTransfer')?.addEventListener('click',()=>{
+    const fromId=document.getElementById('movTrFrom')?.value;
+    const toId=document.getElementById('movTrTo')?.value;
+    const sabor=document.getElementById('movTrSabor')?.value;
+    const tam=document.getElementById('movTrTam')?.value;
+    const qty=Number(document.getElementById('movTrQty')?.value);
+    const nota=document.getElementById('movTrNota')?.value||'';
+    if(fromId===toId){alert('Origem e destino são iguais!');return;}
+    const res=doTransfer(fromId,toId,sabor,tam,qty,nota);
+    if(!res.ok){alert('❌ '+res.msg);return;}
+    document.getElementById('movTrQty').value=1;
+    document.getElementById('movTrNota').value='';
+    updatePreview();
+    renderMovimentacaoTab();
+    const fromName=findLocationById(fromId)?.name||fromId;
+    const toName=findLocationById(toId)?.name||toId;
+    const t=document.createElement('div');
+    t.innerHTML=`✅ ${qty}x ${sabor} ${tam}<br>"${fromName}" → "${toName}"`;
+    t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#012b29;color:#f2efeb;padding:12px 24px;border-radius:10px;font-weight:700;z-index:999999;box-shadow:0 4px 16px rgba(0,0,0,0.3);text-align:center;max-width:90vw';
+    document.body.appendChild(t);setTimeout(()=>t.remove(),3000);
+  });
+
+  // Filtro histórico
+  document.getElementById('movHistFilter')?.addEventListener('click',()=>{
+    const type=document.getElementById('movHistType')?.value||'all';
+    let list=transfers.slice().reverse();
+    if(type!=='all')list=list.filter(t=>t.type===type);
+    const wrap=document.getElementById('movHistContent');
+    if(wrap)wrap.innerHTML=buildHistoricoHTML(list.slice(0,100));
+  });
+}
+
+function buildHistoricoHTML(list){
+  if(!list.length)return`<div class="sv2-empty-msg" style="padding:20px">Nenhuma movimentação encontrada.</div>`;
+  const typeColors={venda:'#d4edda',transfer:'#cce5ff',entrada:'#fff3cd',ajuste:'#f8d7da'};
+  const typeText={venda:'#155724',transfer:'#084298',entrada:'#786200',ajuste:'#721c24'};
+  const typeLabels={venda:'Venda',transfer:'Transferência',entrada:'Entrada',ajuste:'Ajuste'};
+  let html=`<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem;min-width:500px">
+    <thead><tr style="background:#efe9de">
+      <th style="padding:7px 10px;text-align:left">Data</th>
+      <th style="padding:7px 10px">Tipo</th>
+      <th style="padding:7px 10px;text-align:left">De</th>
+      <th style="padding:7px 10px;text-align:left">Para</th>
+      <th style="padding:7px 10px;text-align:left">Produto</th>
+      <th style="padding:7px 10px;text-align:right">Qtd</th>
+      <th style="padding:7px 10px;text-align:left">Obs.</th>
+    </tr></thead><tbody>`;
+  list.forEach(t=>{
+    const fromLoc=findLocationById(t.fromId);
+    const toLoc=findLocationById(t.toId);
+    const bg=typeColors[t.type]||'#eee';
+    const tc=typeText[t.type]||'#333';
+    html+=`<tr style="border-bottom:1px solid #f0ebe3">
+      <td style="padding:7px 10px;white-space:nowrap">${t.date||''}</td>
+      <td style="padding:7px 10px;text-align:center"><span style="background:${bg};color:${tc};padding:2px 7px;border-radius:5px;font-size:0.75rem;font-weight:700">${typeLabels[t.type]||t.type}</span></td>
+      <td style="padding:7px 10px">${fromLoc?`<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:7px;height:7px;border-radius:50%;background:${fromLoc.color}"></span>${fromLoc.name}</span>`:(t.fromId||'—')}</td>
+      <td style="padding:7px 10px">${toLoc?`<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:7px;height:7px;border-radius:50%;background:${toLoc.color}"></span>${toLoc.name}</span>`:(t.toId||'—')}</td>
+      <td style="padding:7px 10px">${t.sabor||''} ${t.tam?`<span class="muted">${t.tam}</span>`:''}</td>
+      <td style="padding:7px 10px;text-align:right;font-weight:700">${t.qty||0}</td>
+      <td style="padding:7px 10px;font-size:0.78rem;color:#8a877c">${t.note||'—'}</td>
+    </tr>`;
+  });
+  html+=`</tbody></table></div>`;
+  return html;
+}
+
+
+
 /* ---- Firebase listeners for stock v2 ---- */
 let stockV2Unsub = null;
 let locationsUnsub = null;
@@ -4258,6 +5114,20 @@ function loadProductsCatalogFromCloud(){
   }).catch(e=>console.error('load products catalog', e));
 }
 window.__loadProductsCatalogFromCloud = loadProductsCatalogFromCloud;
+
+// Load fidelity config from cloud
+function loadFidelityConfigFromCloud(){
+  if(!window.db || !window.auth?.currentUser) return;
+  db.collection('meta').doc('fidelity_config').get().then(doc=>{
+    if(!doc.exists) return;
+    const d = doc.data();
+    if(d && d.stampValue){
+      fidelityConfig = {...fidelityConfig, ...d};
+      localStorage.setItem(FIDELITY_CONFIG_KEY, JSON.stringify(fidelityConfig));
+    }
+  }).catch(e=>console.error('load fidelity config', e));
+}
+window.__loadFidelityConfigFromCloud = loadFidelityConfigFromCloud;
 
 /* ---------- End of IIFE ---------- */
 })();
