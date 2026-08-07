@@ -21,10 +21,15 @@ let clients = JSON.parse(localStorage.getItem(CLIENTS_KEY) || "[]"); // {id,name
 let fidelity = JSON.parse(localStorage.getItem(FIDELITY_KEY) || "{}"); // keyed by clientId
 // Configurações do programa de fidelidade
 let fidelityConfig = JSON.parse(localStorage.getItem(FIDELITY_CONFIG_KEY) || 'null') || {
-  stampValue: 15,   // R$ necessários para ganhar 1 selo
-  stampsPerGift: 10, // selos necessários para ganhar 1 brinde
-  windowDays: 90    // dias de validade dos selos (0 = sem prazo)
+  stampValue: 15,     // R$ necessários para ganhar 1 selo
+  stampsPerGift: 10,  // selos necessários para ganhar 1 brinde
+  windowDays: 90,     // usado quando periodType === 'days'
+  periodType: 'days'  // 'days' | 'month' | 'year' | 'all'
 };
+// compatibilidade com configs salvas antes desta atualização
+if(!fidelityConfig.periodType){
+  fidelityConfig.periodType = (Number(fidelityConfig.windowDays) > 0) ? 'days' : 'all';
+}
 function saveFidelityConfig(){
   localStorage.setItem(FIDELITY_CONFIG_KEY, JSON.stringify(fidelityConfig));
   if(window.auth && auth.currentUser && window.db){
@@ -457,10 +462,29 @@ function ensureFidelityClientEntry(clientId){ if(!clientId) return; if(!fidelity
 
 /* ── 90-day fidelity window ── */
 function cutoffDateFidelity(){
+  const type = fidelityConfig.periodType || 'days';
+  if(type === 'all') return null;
+  if(type === 'month'){
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
+  }
+  if(type === 'year'){
+    const now = new Date();
+    return new Date(now.getFullYear(), 0, 1).toISOString().slice(0,10);
+  }
   const days = Number(fidelityConfig.windowDays) || 0;
-  if(days <= 0) return null; // sem prazo
+  if(days <= 0) return null;
   const d = new Date(); d.setDate(d.getDate() - days);
   return d.toISOString().slice(0,10);
+}
+
+function fidelityPeriodLabel(){
+  const type = fidelityConfig.periodType || 'days';
+  if(type === 'all') return 'sem prazo de validade (todo o histórico)';
+  if(type === 'month') return 'somente o mês atual';
+  if(type === 'year') return 'somente o ano atual';
+  const days = Number(fidelityConfig.windowDays)||0;
+  return days>0 ? `os últimos ${days} dias` : 'sem prazo de validade';
 }
 function isWithinFidelityWindow(item){
   const cutoff = cutoffDateFidelity();
@@ -757,69 +781,105 @@ function renderTable(){
   ensureLocalIds();
   const view = applyFilterAndSort(items);
 
-  view.forEach((p, viewIdx)=>{
-    const valorTotal = Number(p.qtd) * Number(p.valor);
-    if(String(p.status||'').toLowerCase() !== 'resgate'){
-  total += valorTotal;
-}
+  // Agrupa os itens por nº de pedido, preservando a ordem de aparição do "view".
+  // Isso garante que o card do pedido nunca fique duplicado/quebrado, não importa
+  // qual critério de ordenação esteja selecionado (pedido, recentes, sabor, etc.)
+  const groupOrder = [];
+  const groupMap = {};
+  view.forEach(it=>{
+    if(!groupMap[it.pedido]){ groupMap[it.pedido] = []; groupOrder.push(it.pedido); }
+    groupMap[it.pedido].push(it);
+  });
 
-    const docid = p._id ? p._id : p._localId;
+  groupOrder.forEach((pedidoKey, groupIdx)=>{
+    const groupItems = groupMap[pedidoKey];
+    const first = groupItems[0];
+
+    const groupTotal = groupItems.reduce((s,x)=>{
+      const st = String(x.status||'').toLowerCase();
+      return s + (st !== 'resgate' ? Number(x.qtd)*Number(x.valor) : 0);
+    }, 0);
+
+    const clientLabel = first.clientId ? (findClientById(first.clientId)?.name || first.cliente) : first.cliente;
+    const localInfo = first.local && window.__locations ? window.__locations.find(l => l.id === first.local) : null;
 
     let whatsappBtn = '';
-    if(p.telefone){ const link = createWhatsAppLink(p.telefone); if(link){ whatsappBtn = `<a href="${link}" target="_blank" class="whatsapp-btn" title="Abrir WhatsApp">📱 WhatsApp</a>`; } }
+    if(first.telefone){
+      const link = createWhatsAppLink(first.telefone);
+      if(link) whatsappBtn = `<a href="${link}" target="_blank" class="pgh-wa" title="Abrir WhatsApp">📱</a>`;
+    }
 
-    const clientLabel = p.clientId ? (findClientById(p.clientId)?.name || p.cliente) : p.cliente;
-
-    const tr = document.createElement('tr');
-    tr.setAttribute('data-docid', String(docid));
-    tr.innerHTML = `
-      <td class="status-cell" data-docid="${docid}"></td>
-      <td>${clientLabel}</td>
-      <td>${p.tam}</td>
-      <td>${p.qtd}</td>
-      <td>${p.sabor}</td>
-      <td>${formatBRL(p.valor)}</td>
-      <td>${formatBRL(valorTotal)}</td>
-      <td>${p.pedido}</td>
-      <td>${p.data || today()}</td>
-      <td>${p.local && window.__locations ? (() => { const loc = window.__locations.find(l => l.id === p.local); return loc ? '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:' + loc.color + ';flex-shrink:0"></span>' + loc.name + '</span>' : (p.local||'—'); })() : '—'}</td>
-      <td>${whatsappBtn}${p.telefone ? '<br><span class="small">' + p.telefone + '</span>' : '<span class="small muted">—</span>'}</td>
-      <td class="actions-cell"></td>
+    const groupTr = document.createElement('tr');
+    groupTr.className = 'group-header-row' + (groupIdx % 2 === 0 ? ' grp-a' : ' grp-b');
+    if(localInfo) groupTr.style.setProperty('--grp-accent', localInfo.color);
+    groupTr.innerHTML = `
+      <td colspan="6">
+        <div class="pedido-card-header">
+          <div class="pgh-left">
+            <span class="pgh-pedido">Nº ${pedidoKey}</span>
+            <span class="pgh-client">${clientLabel}</span>
+            ${whatsappBtn}
+            ${first.telefone ? `<span class="pgh-phone">${first.telefone}</span>` : ''}
+          </div>
+          <div class="pgh-right">
+            ${localInfo ? `<span class="pgh-local"><span class="pgh-dot" style="background:${localInfo.color}"></span>${localInfo.name}</span>` : ''}
+            <span class="pgh-date">${first.data || today()}</span>
+            <span class="pgh-total">${formatBRL(groupTotal)}</span>
+            <button type="button" class="pgh-editnum" data-pedido="${pedidoKey}" title="Editar nº deste pedido">✏️</button>
+          </div>
+        </div>
+      </td>
     `;
-    tbodyMain.appendChild(tr);
+    tbodyMain.appendChild(groupTr);
 
-    // wire interactive status pill
-    (function(){
-      const statusTd = tr.querySelector('.status-cell');
-      if(!statusTd) return;
-      function buildPill(s){ const cls = 's-' + (s||'').replace(/\s/g,'-'); return `<span class="status-pill ${cls}" style="cursor:pointer;user-select:none" title="Clique para alterar status">${s}</span>`; }
-      statusTd.innerHTML = buildPill(p.status);
-      statusTd.querySelector('.status-pill').addEventListener('click', (ev)=>{
-        ev.stopPropagation();
-        openStatusPicker(docid, p.status, ev.currentTarget);
-      });
-    })();
+    groupItems.forEach((p, idxInGroup)=>{
+      const valorTotal = Number(p.qtd) * Number(p.valor);
+      if(String(p.status||'').toLowerCase() !== 'resgate'){ total += valorTotal; }
+      const docid = p._id ? p._id : p._localId;
+      const isLastOfGroup = (idxInGroup === groupItems.length - 1);
 
-    // create buttons with explicit data-action + data-docid
-    const actionsTd = tr.querySelector('.actions-cell');
-    const btnEdit = document.createElement('button'); btnEdit.type = 'button'; btnEdit.className = 'btn-gray'; btnEdit.style.marginRight = '6px'; btnEdit.style.fontSize = '0.8rem';
-    btnEdit.textContent = 'Editar'; btnEdit.setAttribute('data-action','edit-item'); btnEdit.setAttribute('data-docid', String(docid));
-    const btnEditNum = document.createElement('button'); btnEditNum.type = 'button'; btnEditNum.className = 'btn-gray'; btnEditNum.style.marginRight = '6px'; btnEditNum.style.fontSize = '0.8rem';
-    btnEditNum.textContent = 'Editar Nº'; btnEditNum.setAttribute('data-action','edit-order'); btnEditNum.setAttribute('data-docid', String(docid));
-    const btnDel = document.createElement('button'); btnDel.type = 'button'; btnDel.className = 'btn-red'; btnDel.style.fontSize = '0.8rem'; btnDel.textContent = 'Excluir';
-    btnDel.setAttribute('data-action','delete-item'); btnDel.setAttribute('data-docid', String(docid));
+      const tr = document.createElement('tr');
+      tr.className = 'item-row' + (groupIdx % 2 === 0 ? ' grp-a' : ' grp-b') + (isLastOfGroup ? ' grp-last' : '');
+      tr.setAttribute('data-docid', String(docid));
+      tr.innerHTML = `
+        <td class="status-cell" data-docid="${docid}" data-label="Status"></td>
+        <td data-label="Produto"><span class="produto-sabor">${p.sabor}</span><span class="produto-tam">${p.tam}</span></td>
+        <td data-label="Qtd" class="col-num">${p.qtd}</td>
+        <td data-label="Unit." class="col-num">${formatBRL(p.valor)}</td>
+        <td data-label="Total" class="col-num col-total-cell">${formatBRL(valorTotal)}</td>
+        <td class="actions-cell" data-label="Ações"></td>
+      `;
+      tbodyMain.appendChild(tr);
 
-    actionsTd.appendChild(btnEdit); actionsTd.appendChild(btnEditNum); actionsTd.appendChild(btnDel);
+      (function(){
+        const statusTd = tr.querySelector('.status-cell');
+        if(!statusTd) return;
+        function buildPill(s){ const cls = 's-' + (s||'').replace(/\s/g,'-'); return `<span class="status-pill ${cls}" style="cursor:pointer;user-select:none" title="Clique para alterar status">${s}</span>`; }
+        statusTd.innerHTML = buildPill(p.status);
+        statusTd.querySelector('.status-pill').addEventListener('click', (ev)=>{
+          ev.stopPropagation();
+          openStatusPicker(docid, p.status, ev.currentTarget);
+        });
+      })();
 
-    // Adiciona listeners diretamente (mesma abordagem do arquivo antigo)
-    btnEdit.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); openEditModal(docid); });
-    btnEditNum.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); window.editOrderNum(docid); });
-    btnDel.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); window.deleteItem(docid); });
-  }); // ✅ fecha o view.forEach
+      const actionsTd = tr.querySelector('.actions-cell');
+      const btnEdit = document.createElement('button'); btnEdit.type='button'; btnEdit.className='icon-btn icon-btn-edit'; btnEdit.title='Editar item'; btnEdit.textContent='✏️';
+      btnEdit.setAttribute('data-action','edit-item'); btnEdit.setAttribute('data-docid', String(docid));
+      const btnDel = document.createElement('button'); btnDel.type='button'; btnDel.className='icon-btn icon-btn-del'; btnDel.title='Excluir item'; btnDel.textContent='🗑️';
+      btnDel.setAttribute('data-action','delete-item'); btnDel.setAttribute('data-docid', String(docid));
+      actionsTd.appendChild(btnEdit); actionsTd.appendChild(btnDel);
 
-  countItems.textContent = view.length;
-  sumTotal.textContent = formatBRL(total);
+      btnEdit.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); openEditModal(docid); });
+      btnDel.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); window.deleteItem(docid); });
+    });
+  });
 
+  tbodyMain.querySelectorAll('.pgh-editnum').forEach(btn=>{
+    btn.addEventListener('click', (ev)=>{
+      ev.stopPropagation();
+      window.editOrderNumGroup(btn.getAttribute('data-pedido'));
+    });
+  });
 
   countItems.textContent = view.length;
   sumTotal.textContent = formatBRL(total);
@@ -1029,6 +1089,21 @@ window.editOrderNum = function(docid){
 };
 window.editItem = function(docid){ openEditModal(docid); };
 
+window.editOrderNumGroup = function(pedidoStr){
+  const groupItems = items.filter(it => it.pedido === pedidoStr);
+  if(!groupItems.length) return alert('Pedido não encontrado.');
+  const newNum = prompt('Editar número do pedido (apenas número) — isso altera TODOS os itens deste pedido', String(Number(pedidoStr) || nextOrder));
+  if(newNum === null) return;
+  const newPedido = pad(Number(newNum) || Number(pedidoStr) || nextOrder);
+  groupItems.forEach(it => { it.pedido = newPedido; });
+  saveAllLocal(); renderTable();
+  if(window.auth && auth.currentUser){
+    groupItems.forEach(it=>{
+      if(it._id) db.collection('pedidos').doc(it._id).update({ pedido: newPedido }).catch(e=>console.error('Erro atualizar pedido grupo', e));
+    });
+  }
+};
+  
 /* add to cart / finalize */
 function fillDefaultPrice(){
   const sabor = inputSabor?.value;
@@ -1444,7 +1519,7 @@ function renderFidelityControls(){
     <!-- Painel de configuração (oculto por padrão) -->
     <div id="fidConfigPanel" style="display:none;width:100%;margin-top:10px;background:#fffdf7;border:1.5px solid var(--yellow);border-radius:10px;padding:14px">
       <div style="font-weight:700;color:#012b29;margin-bottom:10px;font-size:0.9rem">⚙️ Configurações do Programa de Fidelidade</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;align-items:end">
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;align-items:end">
         <div>
           <label class="small" style="font-weight:700">💰 Valor por Selo (R$)</label>
           <div class="small muted" style="margin-bottom:4px">Quanto o cliente precisa comprar para ganhar 1 selo</div>
@@ -1458,9 +1533,19 @@ function renderFidelityControls(){
             style="width:100%;padding:7px;border-radius:8px;border:1.5px solid var(--yellow);font-weight:700;font-size:1rem"/>
         </div>
         <div>
-          <label class="small" style="font-weight:700">📅 Prazo de Vigência (dias)</label>
-          <div class="small muted" style="margin-bottom:4px">0 = sem prazo (selos não expiram)</div>
-          <input type="number" id="fidCfgWindowDays" step="1" min="0" value="${fidelityConfig.windowDays||0}"
+          <label class="small" style="font-weight:700">📅 Período considerado</label>
+          <div class="small muted" style="margin-bottom:4px">Quais pedidos contam selos</div>
+          <select id="fidCfgPeriodType" style="width:100%;padding:7px;border-radius:8px;border:1.5px solid var(--yellow);font-weight:700;font-size:0.95rem">
+            <option value="days"${(fidelityConfig.periodType||'days')==='days'?' selected':''}>Últimos X dias</option>
+            <option value="month"${fidelityConfig.periodType==='month'?' selected':''}>Este mês</option>
+            <option value="year"${fidelityConfig.periodType==='year'?' selected':''}>Este ano</option>
+            <option value="all"${fidelityConfig.periodType==='all'?' selected':''}>Sem prazo (todo histórico)</option>
+          </select>
+        </div>
+        <div id="fidCfgDaysWrap" style="${(fidelityConfig.periodType||'days')==='days'?'':'display:none'}">
+          <label class="small" style="font-weight:700">Quantidade de dias</label>
+          <div class="small muted" style="margin-bottom:4px">Válido para "Últimos X dias"</div>
+          <input type="number" id="fidCfgWindowDays" step="1" min="1" value="${fidelityConfig.windowDays||90}"
             style="width:100%;padding:7px;border-radius:8px;border:1.5px solid var(--yellow);font-weight:700;font-size:1rem"/>
         </div>
         <div style="display:flex;align-items:flex-end">
@@ -1468,9 +1553,9 @@ function renderFidelityControls(){
         </div>
       </div>
       <div class="small muted" style="margin-top:8px">
-        Configuração atual: cada <strong>R$ ${fidelityConfig.stampValue||15}</strong> = 1 selo · 
+        Configuração atual: cada <strong>R$ ${fidelityConfig.stampValue||15}</strong> = 1 selo ·
         <strong>${fidelityConfig.stampsPerGift||10} selos</strong> = 1 brinde ·
-        ${(fidelityConfig.windowDays||0)>0?`Válido por <strong>${fidelityConfig.windowDays} dias</strong>`:'<strong>Sem prazo de validade</strong>'}
+        Considerando <strong>${fidelityPeriodLabel()}</strong>
       </div>
     </div>`;
 
@@ -1491,24 +1576,30 @@ function renderFidelityControls(){
     if(p) p.style.display = p.style.display==='none'?'block':'none';
   });
 
+  document.getElementById('fidCfgPeriodType')?.addEventListener('change', (e)=>{
+    const wrap = document.getElementById('fidCfgDaysWrap');
+    if(wrap) wrap.style.display = (e.target.value === 'days') ? '' : 'none';
+  });
+
   document.getElementById('fidBtnSaveConfig')?.addEventListener('click', ()=>{
     const sv=parseFloat(document.getElementById('fidCfgStampValue')?.value);
     const spg=parseInt(document.getElementById('fidCfgStampsPerGift')?.value);
+    const ptype = document.getElementById('fidCfgPeriodType')?.value || 'days';
     const wd=parseInt(document.getElementById('fidCfgWindowDays')?.value);
     if(isNaN(sv)||sv<1){alert('Valor por selo inválido');return;}
     if(isNaN(spg)||spg<1){alert('Selos por brinde inválido');return;}
-    if(isNaN(wd)||wd<0){alert('Prazo de vigência inválido');return;}
+    if(ptype==='days' && (isNaN(wd)||wd<1)){alert('Quantidade de dias inválida');return;}
     fidelityConfig.stampValue=sv;
     fidelityConfig.stampsPerGift=spg;
-    fidelityConfig.windowDays=wd;
+    fidelityConfig.periodType=ptype;
+    if(ptype==='days') fidelityConfig.windowDays=wd;
     saveFidelityConfig();
     saveAllLocal();
-    // Recalcular todos os clientes com nova config
     clients.forEach(c=>recalcFidelityForClient(c.id));
     renderFidelityControls();
     renderFidelityTable(fidelityLastSort,'');
     const t=document.createElement('div');
-    t.textContent=`✅ Configurações salvas! R$ ${sv} = 1 selo · ${spg} selos = 1 brinde`;
+    t.textContent=`✅ Configurações salvas! Considerando ${fidelityPeriodLabel()}`;
     t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#012b29;color:#f2efeb;padding:12px 24px;border-radius:10px;font-weight:700;z-index:999999;box-shadow:0 4px 16px rgba(0,0,0,0.3)';
     document.body.appendChild(t);setTimeout(()=>t.remove(),3000);
   });
@@ -1534,7 +1625,11 @@ function renderFidelityTable(sortBy = fidelityLastSort || 'stamps-desc', filterT
 
   let html = `<table class="fidelity-table"><thead><tr><th>Cliente</th><th>Selos (90 dias)</th><th>Resgates</th><th>Total Prêmios</th></tr></thead><tbody>`;
   out.forEach(c=>{ html += `<tr>\n      <td>${c.name}<br><span class="small muted">${c.phone||'—'}</span></td>\n      <td><span class="fidelity-seal">🏆 ${c.totalStamps}</span></td>\n      <td>${c.redeemedGifts}</td>\n      <td>${c.totalGifts}</td>\n    </tr>`; });
-  html += `</tbody></table><div style="margin-top:10px;font-size:0.85rem;background:#fffbe6;border:1px solid #e9b42e;border-radius:8px;padding:10px;color:#7a5c1e">⏱️ <strong>Janela de 90 dias ativa:</strong> apenas pedidos a partir de <strong>${cutoffDate90()}</strong> são considerados para cálculo de selos. Pedidos mais antigos são ignorados automaticamente.</div>`;
+  const cutoff = cutoffDate90();
+  const windowNote = cutoff
+    ? `⏱️ <strong>Período ativo:</strong> considerando pedidos a partir de <strong>${cutoff}</strong> (${fidelityPeriodLabel()}).`
+    : `⏱️ <strong>Sem prazo de validade:</strong> todos os pedidos do histórico contam para os selos.`;
+  html += `</tbody></table><div style="margin-top:10px;font-size:0.85rem;background:#fffbe6;border:1px solid #e9b42e;border-radius:8px;padding:10px;color:#7a5c1e">${windowNote}</div>`;
   fidelityContent.innerHTML = html;
 
 }
