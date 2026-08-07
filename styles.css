@@ -1193,3 +1193,78 @@ tr:hover td{background:#f5f0e8}
    ============================================================ */
 .btn-blue { background: #1d4ed8; color: white; }
 .btn-blue:hover { background: #1e40af; }
+
+/* ============================================================
+   TABELA PRINCIPAL — v4: agrupada por pedido, mobile-friendly
+   ============================================================ */
+#tableMain { min-width: 640px; }
+#tableMain thead th { font-size:0.78rem; text-transform:uppercase; letter-spacing:0.03em; color:var(--muted); background:#efe9de; }
+#tableMain th, #tableMain td { white-space: normal; }
+
+#tableMain tbody tr.group-header-row td { padding: 0; border-bottom: none; }
+.pedido-card-header {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px 14px;
+  background: linear-gradient(90deg, var(--green) 0%, #024542 100%);
+  color: var(--cream);
+  padding: 9px 14px;
+  margin-top: 14px;
+  border-radius: 10px 10px 0 0;
+  border-left: 6px solid var(--grp-accent, var(--yellow));
+  font-size: 0.82rem;
+}
+#tableMain tbody tr.group-header-row:first-child .pedido-card-header { margin-top: 2px; }
+
+.pgh-left, .pgh-right { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.pgh-pedido { background: rgba(255,255,255,0.15); padding:2px 8px; border-radius:6px; font-weight:800; letter-spacing:0.03em; }
+.pgh-client { font-weight:700; }
+.pgh-phone  { opacity:0.75; font-size:0.78rem; }
+.pgh-wa     { text-decoration:none; font-size:0.95rem; }
+.pgh-local  { display:inline-flex; align-items:center; gap:5px; font-size:0.78rem; opacity:0.9; }
+.pgh-dot    { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.pgh-date   { font-size:0.78rem; opacity:0.85; }
+.pgh-total  { font-weight:800; background: var(--yellow); color: var(--green); padding:2px 9px; border-radius:6px; }
+.pgh-editnum{ background:rgba(255,255,255,0.18); color:var(--cream); border:none; padding:3px 8px; border-radius:6px; cursor:pointer; font-size:0.85rem; }
+.pgh-editnum:hover{ background:rgba(255,255,255,0.3); }
+
+#tableMain tbody tr.item-row.grp-a td { background:#ffffff; }
+#tableMain tbody tr.item-row.grp-b td { background:#f6f2ea; }
+#tableMain tbody tr.item-row td { border-bottom: 1px solid #eee2d3; }
+#tableMain tbody tr.item-row.grp-last td { border-bottom: 2px solid #d8cdbb; }
+#tableMain tbody tr.item-row:hover td { filter: brightness(0.98); }
+
+.produto-sabor { font-weight:700; color:var(--green); }
+.produto-tam   { display:block; font-size:0.74rem; color:var(--muted); }
+.col-num       { text-align:right; font-variant-numeric: tabular-nums; }
+.col-total-cell{ font-weight:800; color:var(--green); }
+
+.icon-btn { background:#eee6d9; color:var(--green); padding:5px 8px; border-radius:7px; font-size:0.85rem; margin-right:4px; }
+.icon-btn-del { background:#fbdede; }
+.icon-btn:hover { transform:translateY(-1px); }
+
+/* ---- Responsivo: linhas viram cartões no celular ---- */
+@media (max-width: 760px){
+  .table-wrapper { overflow: visible; }
+  #tableMain { min-width: 0; width:100%; }
+  #tableMain thead { display:none; }
+  #tableMain, #tableMain tbody { display:block; width:100%; }
+  #tableMain tbody tr.group-header-row { display:block; }
+  .pedido-card-header { flex-direction:column; align-items:flex-start; gap:6px; }
+  .pgh-right { width:100%; justify-content:space-between; }
+
+  #tableMain tbody tr.item-row {
+    display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px;
+    padding:8px 12px;
+  }
+  #tableMain tbody tr.item-row td { display:inline-flex; align-items:baseline; border:none !important; padding:2px 0; }
+  #tableMain tbody tr.item-row td[data-label]:not(.actions-cell):not(.status-cell)::before {
+    content: attr(data-label);
+    font-size:0.63rem; text-transform:uppercase; letter-spacing:0.04em;
+    color:var(--muted); margin-right:5px;
+  }
+  #tableMain tbody tr.item-row td.status-cell { order:1; width:100%; }
+  #tableMain tbody tr.item-row td[data-label="Produto"] { order:2; width:100%; }
+  #tableMain tbody tr.item-row td[data-label="Qtd"] { order:3; }
+  #tableMain tbody tr.item-row td[data-label="Unit."] { order:4; }
+  #tableMain tbody tr.item-row td.col-total-cell { order:5; margin-left:auto; }
+  #tableMain tbody tr.item-row td.actions-cell { order:6; width:100%; justify-content:flex-end; }
+}
