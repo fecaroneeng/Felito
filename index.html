@@ -308,27 +308,31 @@
 
   <!-- modal clients management -->
   <div id="modalClientsBack" class="modal-back">
-    <div class="modal" role="dialog" aria-modal="true" style="max-width:720px">
-      <h3>Clientes</h3>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-        <button id="clientsNew" class="btn-yellow">Novo cliente</button>
-        <input id="clientsSearch" placeholder="Buscar por nome ou telefone" style="flex:1;padding:8px;border-radius:8px;border:1px solid #ddd" />
-        <button id="clientsClose" class="btn-gray">Fechar</button>
+    <div class="modal sv2-modal" role="dialog" aria-modal="true">
+      <div class="sv2-header">
+        <h3>👥 Clientes</h3>
+        <button id="clientsNew" type="button" class="btn-yellow">+ Novo cliente</button>
+        <button id="clientsClose" class="btn-gray" type="button" style="margin-left:auto;white-space:nowrap">✕ Fechar</button>
       </div>
-      <div id="clientsContent" style="margin-top:12px;max-height:60vh;overflow:auto"></div>
+      <div style="padding:14px 20px 0 20px;background:var(--cream)">
+        <input id="clientsSearch" placeholder="Buscar por nome ou telefone" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ddd" />
+      </div>
+      <div id="clientsContent" class="sv2-content"></div>
     </div>
   </div>
 
   <!-- modal fidelidade -->
   <div id="modalFidelityBack" class="modal-back">
-    <div class="modal" role="dialog" aria-modal="true" style="max-width:1000px">
-      <h3>🏆 Programa de Fidelidade</h3>
-      <p class="small" id="fidelityDesc">Programa de fidelidade — configure os valores abaixo ⚙️</p>
-      <div id="fidelityControls" style="display:flex;gap:8px;align-items:center;margin-top:8px"></div>
-      <div id="fidelityContent" style="max-height:60vh;overflow:auto;margin-top:12px"></div>
-      <div style="display:flex;justify-content:flex-end;margin-top:10px">
-        <button id="fidelityClose" class="btn-gray">Fechar</button>
+    <div class="modal sv2-modal" role="dialog" aria-modal="true">
+      <div class="sv2-header">
+        <h3>🏆 Programa de Fidelidade</h3>
+        <button id="fidelityClose" class="btn-gray" type="button" style="margin-left:auto;white-space:nowrap">✕ Fechar</button>
       </div>
+      <div style="padding:14px 20px 0 20px;background:var(--cream)">
+        <p class="small" id="fidelityDesc" style="margin:0 0 10px 0">Programa de fidelidade — configure os valores abaixo ⚙️</p>
+        <div id="fidelityControls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid #e0d9cf"></div>
+      </div>
+      <div id="fidelityContent" class="sv2-content"></div>
     </div>
   </div>
 

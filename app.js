@@ -1751,11 +1751,17 @@ function renderClientsTable(query = ''){
       const gifts  = (fidelity[clientId]?.gifts || []).filter(g=>g.status==='Pendente').length;
       const phone  = c.phone || '';
       const waLink = phone ? createWhatsAppLink(phone) : '';
+      const initials = (c.name||'?').trim().split(/\s+/).map(w=>w[0]||'').slice(0,2).join('').toUpperCase() || '?';
       html += `<div class="client-card${receivable>0?' client-card--pending':''}">
-        <div class="client-card-name">${c.name}</div>
-        <div class="client-card-meta">
-          ${phone ? `<span>📞 ${phone}</span>` : '<span class="muted" style="font-size:0.78rem">Sem telefone</span>'}
-          ${waLink ? `<a href="${waLink}" target="_blank" class="whatsapp-btn" style="font-size:0.75rem;padding:3px 7px;margin-left:6px">WhatsApp</a>` : ''}
+        <div class="client-card-header">
+          <div class="client-card-avatar">${initials}</div>
+          <div class="client-card-name-block">
+            <div class="client-card-name">${c.name}</div>
+            <div class="client-card-meta">
+              ${phone ? `<span>📞 ${phone}</span>` : '<span class="muted" style="font-size:0.78rem">Sem telefone</span>'}
+              ${waLink ? `<a href="${waLink}" target="_blank" class="whatsapp-btn" style="font-size:0.72rem;padding:2px 6px">WhatsApp</a>` : ''}
+            </div>
+          </div>
         </div>
         <div class="client-card-stats">
           <div class="client-stat${receivable>0?' client-stat--warn':''}">
@@ -1766,7 +1772,10 @@ function renderClientsTable(query = ''){
             <div class="client-stat-val">${stamps} 🏷️</div>
             <div class="client-stat-label">Selos</div>
           </div>
-          ${gifts>0?`<div class="client-stat client-stat--gift"><div class="client-stat-val">🎁 ${gifts}</div><div class="client-stat-label">Brinde(s)</div></div>`:''}
+          <div class="client-stat${gifts>0?' client-stat--gift':''}">
+            <div class="client-stat-val">${gifts>0?'🎁 '+gifts:'—'}</div>
+            <div class="client-stat-label">Brinde(s)</div>
+          </div>
         </div>
         <div class="client-card-actions">
           <button type="button" class="small-btn btn-yellow" data-act="edit-client" data-id="${c.id}">✏️ Editar</button>
