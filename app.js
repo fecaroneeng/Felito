@@ -1,4 +1,3 @@
-
 (function(){
 /* ========== KEYS & STATE ========== */
 const ITEMS_KEY = "felito_items_v_final_complete";
@@ -773,113 +772,82 @@ function populateMonthSelector(){
 function createWhatsAppLink(telefone){ if(!telefone) return ''; const cleanPhone = telefone.replace(/\D/g,''); if(cleanPhone.length < 10) return ''; const fullPhone = '55' + cleanPhone; return `https://wa.me/${fullPhone}`; }
 
 /* render main table
-   IMPORTANT: replaced inline onclicks with programmatic listeners to avoid issues where global functions
-   might be overwritten and to ensure buttons reliably open the modal. This also fixes the Edit button not opening. */
+   IMPORTANT: cada item é sua própria linha (igual ao original). Não juntamos
+   itens de pedidos diferentes num único bloco — isso evita qualquer risco de
+   dois pedidos com o mesmo número acabarem misturados visualmente. */
 function renderTable(){
   tbodyMain.innerHTML = "";
   let total = 0;
   ensureLocalIds();
   const view = applyFilterAndSort(items);
 
-  // Agrupa os itens por nº de pedido, preservando a ordem de aparição do "view".
-  // Isso garante que o card do pedido nunca fique duplicado/quebrado, não importa
-  // qual critério de ordenação esteja selecionado (pedido, recentes, sabor, etc.)
-  const groupOrder = [];
-  const groupMap = {};
-  view.forEach(it=>{
-    if(!groupMap[it.pedido]){ groupMap[it.pedido] = []; groupOrder.push(it.pedido); }
-    groupMap[it.pedido].push(it);
-  });
+  let lastPedido = null;
+  let groupToggle = false;
 
-  groupOrder.forEach((pedidoKey, groupIdx)=>{
-    const groupItems = groupMap[pedidoKey];
-    const first = groupItems[0];
-
-    const groupTotal = groupItems.reduce((s,x)=>{
-      const st = String(x.status||'').toLowerCase();
-      return s + (st !== 'resgate' ? Number(x.qtd)*Number(x.valor) : 0);
-    }, 0);
-
-    const clientLabel = first.clientId ? (findClientById(first.clientId)?.name || first.cliente) : first.cliente;
-    const localInfo = first.local && window.__locations ? window.__locations.find(l => l.id === first.local) : null;
-
-    let whatsappBtn = '';
-    if(first.telefone){
-      const link = createWhatsAppLink(first.telefone);
-      if(link) whatsappBtn = `<a href="${link}" target="_blank" class="pgh-wa" title="Abrir WhatsApp">📱</a>`;
+  view.forEach((p)=>{
+    const valorTotal = Number(p.qtd) * Number(p.valor);
+    if(String(p.status||'').toLowerCase() !== 'resgate'){
+      total += valorTotal;
     }
 
-    const groupTr = document.createElement('tr');
-    groupTr.className = 'group-header-row' + (groupIdx % 2 === 0 ? ' grp-a' : ' grp-b');
-    if(localInfo) groupTr.style.setProperty('--grp-accent', localInfo.color);
-    groupTr.innerHTML = `
-      <td colspan="6">
-        <div class="pedido-card-header">
-          <div class="pgh-left">
-            <span class="pgh-pedido">Nº ${pedidoKey}</span>
-            <span class="pgh-client">${clientLabel}</span>
-            ${whatsappBtn}
-            ${first.telefone ? `<span class="pgh-phone">${first.telefone}</span>` : ''}
-          </div>
-          <div class="pgh-right">
-            ${localInfo ? `<span class="pgh-local"><span class="pgh-dot" style="background:${localInfo.color}"></span>${localInfo.name}</span>` : ''}
-            <span class="pgh-date">${first.data || today()}</span>
-            <span class="pgh-total">${formatBRL(groupTotal)}</span>
-            <button type="button" class="pgh-editnum" data-pedido="${pedidoKey}" title="Editar nº deste pedido">✏️</button>
-          </div>
-        </div>
+    const docid = p._id ? p._id : p._localId;
+    const isNewGroup = (p.pedido !== lastPedido);
+    if(isNewGroup){ lastPedido = p.pedido; groupToggle = !groupToggle; }
+
+    let whatsappBtn = '';
+    if(p.telefone){ const link = createWhatsAppLink(p.telefone); if(link){ whatsappBtn = `<a href="${link}" target="_blank" class="whatsapp-btn" title="Abrir WhatsApp">📱</a>`; } }
+
+    const clientLabel = p.clientId ? (findClientById(p.clientId)?.name || p.cliente) : p.cliente;
+    const localInfo = p.local && window.__locations ? window.__locations.find(l => l.id === p.local) : null;
+
+    const tr = document.createElement('tr');
+    tr.className = 'item-row' + (groupToggle ? ' grp-a' : ' grp-b') + (isNewGroup ? ' grp-start' : '');
+    tr.setAttribute('data-docid', String(docid));
+    tr.innerHTML = `
+      <td class="status-cell" data-docid="${docid}" data-label="Status"></td>
+      <td data-label="Cliente">
+        <span class="cell-client-name">${clientLabel}</span>
+        ${p.telefone ? `<span class="cell-client-phone">${p.telefone} ${whatsappBtn}</span>` : ''}
       </td>
+      <td data-label="Produto"><span class="produto-sabor">${p.sabor}</span><span class="produto-tam">${p.tam}</span></td>
+      <td data-label="Qtd" class="col-num">${p.qtd}</td>
+      <td data-label="Unit." class="col-num">${formatBRL(p.valor)}</td>
+      <td data-label="Total" class="col-num col-total-cell">${formatBRL(valorTotal)}</td>
+      <td data-label="Pedido" class="col-num">${p.pedido}</td>
+      <td data-label="Data">${p.data || today()}</td>
+      <td data-label="Local">${localInfo ? `<span class="local-badge"><span class="local-dot" style="background:${localInfo.color}"></span>${localInfo.name}</span>` : '—'}</td>
+      <td class="actions-cell" data-label="Ações"></td>
     `;
-    tbodyMain.appendChild(groupTr);
+    tbodyMain.appendChild(tr);
 
-    groupItems.forEach((p, idxInGroup)=>{
-      const valorTotal = Number(p.qtd) * Number(p.valor);
-      if(String(p.status||'').toLowerCase() !== 'resgate'){ total += valorTotal; }
-      const docid = p._id ? p._id : p._localId;
-      const isLastOfGroup = (idxInGroup === groupItems.length - 1);
+    // wire interactive status pill
+    (function(){
+      const statusTd = tr.querySelector('.status-cell');
+      if(!statusTd) return;
+      function buildPill(s){ const cls = 's-' + (s||'').replace(/\s/g,'-'); return `<span class="status-pill ${cls}" style="cursor:pointer;user-select:none" title="Clique para alterar status">${s}</span>`; }
+      statusTd.innerHTML = buildPill(p.status);
+      statusTd.querySelector('.status-pill').addEventListener('click', (ev)=>{
+        ev.stopPropagation();
+        openStatusPicker(docid, p.status, ev.currentTarget);
+      });
+    })();
 
-      const tr = document.createElement('tr');
-      tr.className = 'item-row' + (groupIdx % 2 === 0 ? ' grp-a' : ' grp-b') + (isLastOfGroup ? ' grp-last' : '');
-      tr.setAttribute('data-docid', String(docid));
-      tr.innerHTML = `
-        <td class="status-cell" data-docid="${docid}" data-label="Status"></td>
-        <td data-label="Produto"><span class="produto-sabor">${p.sabor}</span><span class="produto-tam">${p.tam}</span></td>
-        <td data-label="Qtd" class="col-num">${p.qtd}</td>
-        <td data-label="Unit." class="col-num">${formatBRL(p.valor)}</td>
-        <td data-label="Total" class="col-num col-total-cell">${formatBRL(valorTotal)}</td>
-        <td class="actions-cell" data-label="Ações"></td>
-      `;
-      tbodyMain.appendChild(tr);
+    // create buttons with explicit data-action + data-docid
+    const actionsTd = tr.querySelector('.actions-cell');
+    const btnEdit = document.createElement('button'); btnEdit.type = 'button'; btnEdit.className = 'icon-btn icon-btn-edit'; btnEdit.title = 'Editar item'; btnEdit.textContent = '✏️';
+    btnEdit.setAttribute('data-action','edit-item'); btnEdit.setAttribute('data-docid', String(docid));
+    const btnEditNum = document.createElement('button'); btnEditNum.type = 'button'; btnEditNum.className = 'icon-btn'; btnEditNum.title = 'Editar nº do pedido'; btnEditNum.textContent = '#️⃣';
+    btnEditNum.setAttribute('data-action','edit-order'); btnEditNum.setAttribute('data-docid', String(docid));
+    const btnDel = document.createElement('button'); btnDel.type = 'button'; btnDel.className = 'icon-btn icon-btn-del'; btnDel.title = 'Excluir item'; btnDel.textContent = '🗑️';
+    btnDel.setAttribute('data-action','delete-item'); btnDel.setAttribute('data-docid', String(docid));
 
-      (function(){
-        const statusTd = tr.querySelector('.status-cell');
-        if(!statusTd) return;
-        function buildPill(s){ const cls = 's-' + (s||'').replace(/\s/g,'-'); return `<span class="status-pill ${cls}" style="cursor:pointer;user-select:none" title="Clique para alterar status">${s}</span>`; }
-        statusTd.innerHTML = buildPill(p.status);
-        statusTd.querySelector('.status-pill').addEventListener('click', (ev)=>{
-          ev.stopPropagation();
-          openStatusPicker(docid, p.status, ev.currentTarget);
-        });
-      })();
+    actionsTd.appendChild(btnEdit); actionsTd.appendChild(btnEditNum); actionsTd.appendChild(btnDel);
 
-      const actionsTd = tr.querySelector('.actions-cell');
-      const btnEdit = document.createElement('button'); btnEdit.type='button'; btnEdit.className='icon-btn icon-btn-edit'; btnEdit.title='Editar item'; btnEdit.textContent='✏️';
-      btnEdit.setAttribute('data-action','edit-item'); btnEdit.setAttribute('data-docid', String(docid));
-      const btnDel = document.createElement('button'); btnDel.type='button'; btnDel.className='icon-btn icon-btn-del'; btnDel.title='Excluir item'; btnDel.textContent='🗑️';
-      btnDel.setAttribute('data-action','delete-item'); btnDel.setAttribute('data-docid', String(docid));
-      actionsTd.appendChild(btnEdit); actionsTd.appendChild(btnDel);
-
-      btnEdit.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); openEditModal(docid); });
-      btnDel.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); window.deleteItem(docid); });
-    });
-  });
-
-  tbodyMain.querySelectorAll('.pgh-editnum').forEach(btn=>{
-    btn.addEventListener('click', (ev)=>{
-      ev.stopPropagation();
-      window.editOrderNumGroup(btn.getAttribute('data-pedido'));
-    });
-  });
+    // Adiciona listeners diretamente
+    btnEdit.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); openEditModal(docid); });
+    btnEditNum.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); window.editOrderNum(docid); });
+    btnDel.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); window.deleteItem(docid); });
+  }); // fecha o view.forEach
 
   countItems.textContent = view.length;
   sumTotal.textContent = formatBRL(total);
@@ -1089,21 +1057,6 @@ window.editOrderNum = function(docid){
 };
 window.editItem = function(docid){ openEditModal(docid); };
 
-window.editOrderNumGroup = function(pedidoStr){
-  const groupItems = items.filter(it => it.pedido === pedidoStr);
-  if(!groupItems.length) return alert('Pedido não encontrado.');
-  const newNum = prompt('Editar número do pedido (apenas número) — isso altera TODOS os itens deste pedido', String(Number(pedidoStr) || nextOrder));
-  if(newNum === null) return;
-  const newPedido = pad(Number(newNum) || Number(pedidoStr) || nextOrder);
-  groupItems.forEach(it => { it.pedido = newPedido; });
-  saveAllLocal(); renderTable();
-  if(window.auth && auth.currentUser){
-    groupItems.forEach(it=>{
-      if(it._id) db.collection('pedidos').doc(it._id).update({ pedido: newPedido }).catch(e=>console.error('Erro atualizar pedido grupo', e));
-    });
-  }
-};
-  
 /* add to cart / finalize */
 function fillDefaultPrice(){
   const sabor = inputSabor?.value;
@@ -1501,7 +1454,6 @@ function renderFidelityControls(){
   if(!fidelityControls) return;
   fidelityControls.innerHTML = `
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%">
-      <!-- Ordenação e busca -->
       <select id="fidSortSel" style="padding:6px;border-radius:6px;border:1px solid #ddd">
         <option value="name-asc">Nome A→Z</option>
         <option value="name-desc">Nome Z→A</option>
@@ -1511,15 +1463,12 @@ function renderFidelityControls(){
       </select>
       <input id="fidFilterInp" placeholder="Buscar cliente..." style="padding:6px;border-radius:6px;border:1px solid #ddd;min-width:150px;flex:1"/>
       <button type="button" class="btn-gray" id="fidBtnRefresh" style="padding:6px 12px">↻ Atualizar</button>
-
-      <!-- Config do programa -->
       <button type="button" class="btn-gray" id="fidBtnConfigToggle" style="padding:6px 12px;margin-left:auto">⚙️ Configurar Programa</button>
     </div>
 
-    <!-- Painel de configuração (oculto por padrão) -->
     <div id="fidConfigPanel" style="display:none;width:100%;margin-top:10px;background:#fffdf7;border:1.5px solid var(--yellow);border-radius:10px;padding:14px">
       <div style="font-weight:700;color:#012b29;margin-bottom:10px;font-size:0.9rem">⚙️ Configurações do Programa de Fidelidade</div>
-<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;align-items:end">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;align-items:end">
         <div>
           <label class="small" style="font-weight:700">💰 Valor por Selo (R$)</label>
           <div class="small muted" style="margin-bottom:4px">Quanto o cliente precisa comprar para ganhar 1 selo</div>
@@ -1563,46 +1512,63 @@ function renderFidelityControls(){
   const filterInp = document.getElementById('fidFilterInp');
   if(sortSel) sortSel.value = fidelityLastSort || 'stamps-desc';
 
-  document.getElementById('fidBtnRefresh')?.addEventListener('click', ()=>{
-    fidelityLastSort = sortSel?.value || 'stamps-desc';
-    clients.forEach(c=>recalcFidelityForClient(c.id));
-    renderFidelityTable(fidelityLastSort, filterInp?.value||'');
-  });
   sortSel?.addEventListener('change', ()=>{ fidelityLastSort=sortSel.value; renderFidelityTable(sortSel.value, filterInp?.value||''); });
   filterInp?.addEventListener('input', ()=> renderFidelityTable(sortSel?.value||'stamps-desc', filterInp.value));
-
-  document.getElementById('fidBtnConfigToggle')?.addEventListener('click', ()=>{
-    const p=document.getElementById('fidConfigPanel');
-    if(p) p.style.display = p.style.display==='none'?'block':'none';
-  });
 
   document.getElementById('fidCfgPeriodType')?.addEventListener('change', (e)=>{
     const wrap = document.getElementById('fidCfgDaysWrap');
     if(wrap) wrap.style.display = (e.target.value === 'days') ? '' : 'none';
   });
 
-  document.getElementById('fidBtnSaveConfig')?.addEventListener('click', ()=>{
-    const sv=parseFloat(document.getElementById('fidCfgStampValue')?.value);
-    const spg=parseInt(document.getElementById('fidCfgStampsPerGift')?.value);
-    const ptype = document.getElementById('fidCfgPeriodType')?.value || 'days';
-    const wd=parseInt(document.getElementById('fidCfgWindowDays')?.value);
-    if(isNaN(sv)||sv<1){alert('Valor por selo inválido');return;}
-    if(isNaN(spg)||spg<1){alert('Selos por brinde inválido');return;}
-    if(ptype==='days' && (isNaN(wd)||wd<1)){alert('Quantidade de dias inválida');return;}
-    fidelityConfig.stampValue=sv;
-    fidelityConfig.stampsPerGift=spg;
-    fidelityConfig.periodType=ptype;
-    if(ptype==='days') fidelityConfig.windowDays=wd;
-    saveFidelityConfig();
-    saveAllLocal();
-    clients.forEach(c=>recalcFidelityForClient(c.id));
-    renderFidelityControls();
-    renderFidelityTable(fidelityLastSort,'');
-    const t=document.createElement('div');
-    t.textContent=`✅ Configurações salvas! Considerando ${fidelityPeriodLabel()}`;
-    t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#012b29;color:#f2efeb;padding:12px 24px;border-radius:10px;font-weight:700;z-index:999999;box-shadow:0 4px 16px rgba(0,0,0,0.3)';
-    document.body.appendChild(t);setTimeout(()=>t.remove(),3000);
-  });
+  // Delegação única e robusta: registrada 1x no elemento pai que nunca é
+  // substituído (só o innerHTML dele muda), então continua funcionando
+  // mesmo depois de vários re-renders deste painel.
+  if(!fidelityControls.dataset.wired){
+    fidelityControls.dataset.wired = '1';
+    fidelityControls.addEventListener('click', (ev)=>{
+      const btn = ev.target.closest('button');
+      if(!btn) return;
+
+      if(btn.id === 'fidBtnRefresh'){
+        const sEl = document.getElementById('fidSortSel');
+        const fEl = document.getElementById('fidFilterInp');
+        fidelityLastSort = sEl?.value || 'stamps-desc';
+        clients.forEach(c=>recalcFidelityForClient(c.id));
+        renderFidelityTable(fidelityLastSort, fEl?.value||'');
+        return;
+      }
+
+      if(btn.id === 'fidBtnConfigToggle'){
+        const p = document.getElementById('fidConfigPanel');
+        if(p) p.style.display = (p.style.display === 'none' || !p.style.display) ? 'block' : 'none';
+        return;
+      }
+
+      if(btn.id === 'fidBtnSaveConfig'){
+        const sv = parseFloat(document.getElementById('fidCfgStampValue')?.value);
+        const spg = parseInt(document.getElementById('fidCfgStampsPerGift')?.value);
+        const ptype = document.getElementById('fidCfgPeriodType')?.value || 'days';
+        const wd = parseInt(document.getElementById('fidCfgWindowDays')?.value);
+        if(isNaN(sv)||sv<1){ alert('Valor por selo inválido'); return; }
+        if(isNaN(spg)||spg<1){ alert('Selos por brinde inválido'); return; }
+        if(ptype==='days' && (isNaN(wd)||wd<1)){ alert('Quantidade de dias inválida'); return; }
+        fidelityConfig.stampValue = sv;
+        fidelityConfig.stampsPerGift = spg;
+        fidelityConfig.periodType = ptype;
+        if(ptype==='days') fidelityConfig.windowDays = wd;
+        saveFidelityConfig();
+        saveAllLocal();
+        clients.forEach(c=>recalcFidelityForClient(c.id));
+        renderFidelityControls();
+        renderFidelityTable(fidelityLastSort,'');
+        const t=document.createElement('div');
+        t.textContent=`✅ Configurações salvas! Considerando ${fidelityPeriodLabel()}`;
+        t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#012b29;color:#f2efeb;padding:12px 24px;border-radius:10px;font-weight:700;z-index:999999;box-shadow:0 4px 16px rgba(0,0,0,0.3)';
+        document.body.appendChild(t);setTimeout(()=>t.remove(),3000);
+        return;
+      }
+    });
+  }
 }
 
 function renderFidelityTable(sortBy = fidelityLastSort || 'stamps-desc', filterText = ''){
@@ -2065,7 +2031,7 @@ if(btnCriar) btnCriar.addEventListener('click', ()=>{
   auth.createUserWithEmailAndPassword(e,s)
     .then(()=>alert('Conta criada. Faça login.'))
     .catch(err=>alert('Erro criar conta: '+(err.message||err)));
-}); // ✅ FECHOU CERTO
+});
 
 
 if(btnLogout) btnLogout.addEventListener('click', ()=>{
@@ -2115,7 +2081,6 @@ if(typeof fidelityContent !== 'undefined' && fidelityContent){
 
     if(actionView === 'view-client' && cid){
       // OPEN the client content inside the fidelity modal.
-      // IMPORTANT: do NOT call showModal(modalFidelityBack) again here (it causes a re-show race that blocks clicks).
       openFidelityClientModal(cid);
       return;
     }
@@ -5218,6 +5183,9 @@ function loadFidelityConfigFromCloud(){
     const d = doc.data();
     if(d && d.stampValue){
       fidelityConfig = {...fidelityConfig, ...d};
+      if(!fidelityConfig.periodType){
+        fidelityConfig.periodType = (Number(fidelityConfig.windowDays) > 0) ? 'days' : 'all';
+      }
       localStorage.setItem(FIDELITY_CONFIG_KEY, JSON.stringify(fidelityConfig));
     }
   }).catch(e=>console.error('load fidelity config', e));
