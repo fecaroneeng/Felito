@@ -5202,4 +5202,518 @@ function loadFidelityConfigFromCloud(){
 window.__loadFidelityConfigFromCloud = loadFidelityConfigFromCloud;
 
 /* ---------- End of IIFE ---------- */
+
+  /* ============================================================
+   PATCH v6 — Clientes em lista · Financeiro/Pendências ·
+   Botão "Copiar conta" na tabela · Mobile mais limpo
+   ------------------------------------------------------------
+   COLE ESTE BLOCO NO FINAL DO app.js, LOGO ANTES DA LINHA:
+       /* ---------- End of IIFE ---------- *\/
+       })();
+   ============================================================ */
+
+/* ---------- Toast padrão ---------- */
+function showToast(html, ms){
+  const t = document.createElement('div');
+  t.innerHTML = html;
+  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#012b29;color:#f2efeb;padding:12px 22px;border-radius:10px;font-weight:700;z-index:1000001;box-shadow:0 4px 16px rgba(0,0,0,0.3);max-width:92vw;text-align:center;font-size:0.9rem;line-height:1.35';
+  document.body.appendChild(t);
+  setTimeout(()=> t.remove(), ms || 2600);
+}
+
+/* ---------- Copiar texto ---------- */
+function copyTextToClipboard(txt){
+  if(navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(txt);
+  return new Promise((res, rej)=>{
+    try{
+      const ta = document.createElement('textarea');
+      ta.value = txt;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select(); document.execCommand('copy'); ta.remove();
+      res();
+    }catch(e){ rej(e); }
+  });
+}
+
+/* ---------- Identificação de cliente / pendências ---------- */
+const FIN_CLOSED = ['Pago','Cancelado','Resgate'];
+
+function finClientKeyOf(cliente, clientId){
+  const cid = clientId || (findClientByNameExact(cliente || '') || {}).id || null;
+  return cid ? cid : ('nome::' + String(cliente || '—').trim());
+}
+function finItemKey(it){ return finClientKeyOf(it.cliente, it.clientId); }
+function finKeyName(key){
+  if(String(key).indexOf('nome::') === 0) return String(key).slice(6);
+  return (findClientById(key) || {}).name || '—';
+}
+function finKeyPhone(key){
+  if(String(key).indexOf('nome::') === 0){
+    const it = items.find(x => finItemKey(x) === key && x.telefone);
+    return it ? it.telefone : '';
+  }
+  return (findClientById(key) || {}).phone || '';
+}
+function finIsReceber(it){
+  return FIN_CLOSED.indexOf(it.status) < 0 && (Number(it.qtd || 0) * Number(it.valor || 0)) > 0;
+}
+function finIsEntregar(it){ return it.status === 'A Fazer' || it.status === 'À Entregar'; }
+
+/* ---------- Mensagem de cobrança ---------- */
+function finBuildMessage(key){
+  const map = {}; let total = 0;
+  items.forEach(it=>{
+    if(finItemKey(it) !== key) return;
+    if(!finIsReceber(it)) return;
+    const k = `${it.sabor}||${it.tam}`;
+    if(!map[k]) map[k] = { sabor: it.sabor, tam: it.tam, qtd: 0, total: 0 };
+    map[k].qtd  += Number(it.qtd || 0);
+    map[k].total += Number(it.qtd || 0) * Number(it.valor || 0);
+  });
+  let msg = '';
+  Object.keys(map).forEach(k=>{
+    const l = map[k];
+    msg += `${formatBRL(l.total)} por ${l.qtd} ${l.sabor} ${l.tam}\n`;
+    total += l.total;
+  });
+  if(!msg) return null;
+  msg += `\nTotal ${formatBRL(total)}\nPix CNPJ: 53643402000170`;
+  return msg;
+}
+
+function copyClientAccount(cliente, clientId){
+  const key = finClientKeyOf(cliente, clientId);
+  const msg = finBuildMessage(key);
+  if(!msg){ showToast(`<b>${finKeyName(key)}</b> não tem valores em aberto.`); return; }
+  copyTextToClipboard(msg)
+    .then(()=> showToast(`📋 Conta de <b>${finKeyName(key)}</b> copiada<br><span style="font-weight:400;font-size:.78rem">Cole no WhatsApp para cobrar</span>`))
+    .catch(()=> prompt('Copiar manualmente (Ctrl+C):', msg));
+}
+
+/* ---------- Seletor de status reutilizável ---------- */
+function finStatusPicker(anchorEl, current, onPick){
+  const old = document.getElementById('statusPickerPopup');
+  if(old) old.remove();
+  const popup = document.createElement('div');
+  popup.id = 'statusPickerPopup';
+  popup.className = 'status-picker-popup';
+  ['A Fazer','À Entregar','Entregue','Pago','Cancelado','Resgate'].forEach(s=>{
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'status-picker-option s-' + s.replace(/\s/g,'-');
+    b.textContent = s;
+    if(s === current) b.classList.add('status-picker-current');
+    b.addEventListener('click', ev=>{ ev.stopPropagation(); popup.remove(); onPick(s); });
+    popup.appendChild(b);
+  });
+  document.body.appendChild(popup);
+  const rect = anchorEl.getBoundingClientRect();
+  const popH = 240;
+  popup.style.top = ((window.innerHeight - rect.bottom > popH)
+      ? rect.bottom + window.scrollY + 4
+      : Math.max(8, rect.top + window.scrollY - popH - 4)) + 'px';
+  popup.style.left = Math.max(8, Math.min(rect.left + window.scrollX, window.innerWidth - 170)) + 'px';
+  function onOutside(e){
+    if(!popup.contains(e.target)){ popup.remove(); document.removeEventListener('click', onOutside, true); }
+  }
+  setTimeout(()=> document.addEventListener('click', onOutside, true), 10);
+}
+
+/* ============================================================
+   CLIENTES — layout em lista (uma linha por cliente)
+   ============================================================ */
+renderClientsTable = function(query = ''){
+  if(!clientsContent) return;
+  const existingSortEl = document.getElementById('clientsSortSelect');
+  const sortVal = existingSortEl ? existingSortEl.value : 'receivable-desc';
+
+  let list = clients.slice();
+  if(query && query.trim()){
+    const q = query.trim().toLowerCase();
+    list = list.filter(c => (c.name||'').toLowerCase().includes(q) || (c.phone||'').toLowerCase().includes(q));
+  }
+
+  const receivablesMap = {};
+  list.forEach(c => { receivablesMap[c.id] = 0; });
+  items.forEach(it=>{
+    const cid = it.clientId || (findClientByNameExact(it.cliente)||{}).id || null;
+    if(!cid || receivablesMap[cid] === undefined) return;
+    const st = (it.status||'').toLowerCase();
+    if(st === 'pago' || st === 'cancelado' || st === 'resgate') return;
+    receivablesMap[cid] += (Number(it.qtd||0) * Number(it.valor||0)) || 0;
+  });
+
+  if(sortVal === 'receivable-desc')      list.sort((a,b)=> (receivablesMap[b.id]||0) - (receivablesMap[a.id]||0));
+  else if(sortVal === 'receivable-asc')  list.sort((a,b)=> (receivablesMap[a.id]||0) - (receivablesMap[b.id]||0));
+  else if(sortVal === 'name-asc')        list.sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+  else if(sortVal === 'name-desc')       list.sort((a,b)=> (b.name||'').localeCompare(a.name||''));
+  else if(sortVal === 'stamps-desc'){
+    list.forEach(c => { if(!fidelity[c.id]) fidelity[c.id] = { totalStamps:0, gifts:[] }; });
+    list.sort((a,b)=> Number(fidelity[b.id]?.totalStamps||0) - Number(fidelity[a.id]?.totalStamps||0));
+  }
+  else list.sort((a,b)=> (receivablesMap[b.id]||0) - (receivablesMap[a.id]||0));
+
+  const totalReceivableAll   = Object.keys(receivablesMap).reduce((acc,k)=> acc + (receivablesMap[k]||0), 0);
+  const clientsWithReceivable = Object.keys(receivablesMap).filter(k => (receivablesMap[k]||0) > 0).length;
+  const sel = v => (sortVal === v ? ' selected' : '');
+
+  let html = `
+    <div class="clients-toolbar">
+      <div class="clients-toolbar-left">
+        <label class="small" style="margin:0">Ordenar</label>
+        <select id="clientsSortSelect">
+          <option value="receivable-desc"${sel('receivable-desc')}>A receber (maior)</option>
+          <option value="receivable-asc"${sel('receivable-asc')}>A receber (menor)</option>
+          <option value="name-asc"${sel('name-asc')}>Nome A→Z</option>
+          <option value="name-desc"${sel('name-desc')}>Nome Z→A</option>
+          <option value="stamps-desc"${sel('stamps-desc')}>Selos (maior)</option>
+        </select>
+      </div>
+      <div class="clients-toolbar-right">
+        <span><b>${list.length}</b> cliente(s)</span>
+        <span class="clients-toolbar-sep"></span>
+        <span><b>${formatBRL(totalReceivableAll)}</b> a receber · ${clientsWithReceivable} em aberto</span>
+      </div>
+    </div>`;
+
+  if(!list.length){
+    html += `<div class="sv2-empty-msg" style="padding:36px">Nenhum cliente encontrado.</div>`;
+  } else {
+    html += `<div class="clients-list">`;
+    list.forEach(c=>{
+      const receivable = receivablesMap[c.id] || 0;
+      const stamps = fidelity[c.id]?.totalStamps || 0;
+      const gifts  = (fidelity[c.id]?.gifts || []).filter(g => g.status === 'Pendente').length;
+      const phone  = c.phone || '';
+      const waLink = phone ? createWhatsAppLink(phone) : '';
+      const initials = (c.name||'?').trim().split(/\s+/).map(w=>w[0]||'').slice(0,2).join('').toUpperCase() || '?';
+      html += `<div class="client-row${receivable>0?' client-row--pending':''}">
+        <div class="client-row-avatar">${initials}</div>
+        <div class="client-row-main">
+          <div class="client-row-name">${c.name}</div>
+          <div class="client-row-meta">
+            ${phone ? `<span>📞 ${phone}</span>` : '<span class="muted">Sem telefone</span>'}
+            ${waLink ? `<a href="${waLink}" target="_blank" class="whatsapp-btn">WhatsApp</a>` : ''}
+          </div>
+        </div>
+        <div class="client-row-stats">
+          <span class="client-chip${receivable>0?' chip-warn':''}"><b>${formatBRL(receivable)}</b><small>A receber</small></span>
+          <span class="client-chip"><b>${stamps} 🏷️</b><small>Selos</small></span>
+          <span class="client-chip${gifts>0?' chip-gift':''}"><b>${gifts>0?'🎁 '+gifts:'—'}</b><small>Brindes</small></span>
+        </div>
+        <div class="client-row-actions">
+          <button type="button" class="small-btn btn-yellow" data-act="edit-client" data-id="${c.id}">✏️ Editar</button>
+          <button type="button" class="small-btn btn-red" data-act="del-client" data-id="${c.id}">🗑️</button>
+        </div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  clientsContent.innerHTML = html;
+
+  const sortEl = document.getElementById('clientsSortSelect');
+  if(sortEl) sortEl.addEventListener('change', ()=> renderClientsTable(query));
+
+  clientsContent.querySelectorAll('button[data-act=edit-client]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      const c = findClientById(b.getAttribute('data-id'));
+      if(!c) return alert('Cliente não encontrado');
+      clientName.value = c.name;
+      clientPhone.value = c.phone || '';
+      showModal(modalClientBack);
+      currentEditingClientId = c.id;
+    });
+  });
+  clientsContent.querySelectorAll('button[data-act=del-client]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      if(!confirm('Excluir cliente? Os pedidos anteriores não são apagados, apenas desvinculados.')) return;
+      deleteClient(b.getAttribute('data-id'));
+      saveAllLocal(); renderClientsTable(query); renderTable();
+    });
+  });
+};
+
+/* ============================================================
+   FINANCEIRO / PENDÊNCIAS
+   ============================================================ */
+let finTab = 'receber';
+let finExpanded = {};
+let finSearchTerm = '';
+
+function finTabMatch(it){
+  if(finTab === 'receber')  return finIsReceber(it);
+  if(finTab === 'entregar') return finIsEntregar(it);
+  return finIsReceber(it) || finIsEntregar(it);
+}
+
+function finBuildGroups(){
+  const groups = {};
+  items.forEach(it=>{
+    if(!finTabMatch(it)) return;
+    const key = finItemKey(it);
+    if(!groups[key]) groups[key] = { key, name: finKeyName(key), phone: finKeyPhone(key), list: [], receber: 0, entregar: 0 };
+    const g = groups[key];
+    g.list.push(it);
+    if(finIsReceber(it))  g.receber  += Number(it.qtd||0) * Number(it.valor||0);
+    if(finIsEntregar(it)) g.entregar += 1;
+  });
+  let arr = Object.keys(groups).map(k => groups[k]);
+  if(finSearchTerm && finSearchTerm.trim()){
+    const q = finSearchTerm.trim().toLowerCase();
+    arr = arr.filter(g => g.name.toLowerCase().includes(q) || (g.phone||'').toLowerCase().includes(q));
+  }
+  arr.forEach(g => g.list.sort((a,b)=> (Number(b.pedido)||0) - (Number(a.pedido)||0)));
+  arr.sort((a,b)=> (b.receber - a.receber) || a.name.localeCompare(b.name));
+  return arr;
+}
+
+function finEnsureDom(){
+  if(document.getElementById('modalFinanceiroBack')) return;
+
+  const holder = document.createElement('div');
+  holder.innerHTML = `
+  <div id="modalFinanceiroBack" class="modal-back">
+    <div class="modal sv2-modal" role="dialog" aria-modal="true">
+      <div class="sv2-header">
+        <h3>💵 Financeiro</h3>
+        <div class="sv2-tabs" id="finTabs">
+          <button type="button" class="sv2-tab active" data-ftab="receber">💰 A receber</button>
+          <button type="button" class="sv2-tab" data-ftab="entregar">🚚 A entregar</button>
+          <button type="button" class="sv2-tab" data-ftab="todas">📋 Todas as pendências</button>
+        </div>
+        <button id="financeiroClose" class="btn-gray" type="button" style="margin-left:auto;white-space:nowrap">✕ Fechar</button>
+      </div>
+      <div style="padding:14px 20px 0 20px;background:var(--cream)">
+        <input id="financeiroSearch" placeholder="Buscar cliente ou telefone" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ddd" />
+      </div>
+      <div id="financeiroContent" class="sv2-content"></div>
+    </div>
+  </div>`;
+  document.body.appendChild(holder.firstElementChild);
+
+  // Botão no topo, ao lado de Clientes
+  const ref = document.getElementById('btnClients');
+  if(ref && !document.getElementById('btnFinanceiro')){
+    const b = document.createElement('button');
+    b.id = 'btnFinanceiro';
+    b.type = 'button';
+    b.className = 'btn-gray';
+    b.style.cssText = 'background:#b45309;color:#fff';
+    b.textContent = '💵 Financeiro';
+    ref.parentNode.insertBefore(b, ref);
+    b.addEventListener('click', openFinanceiro);
+  }
+
+  const modal   = document.getElementById('modalFinanceiroBack');
+  const content = document.getElementById('financeiroContent');
+  const search  = document.getElementById('financeiroSearch');
+
+  document.getElementById('financeiroClose')?.addEventListener('click', ()=> hideModal(modal));
+  modal.addEventListener('click', ev=>{
+    if(ev.target === modal && modal.dataset.justOpened !== '1') hideModal(modal);
+  });
+
+  document.getElementById('finTabs')?.addEventListener('click', ev=>{
+    const btn = ev.target.closest('[data-ftab]');
+    if(!btn) return;
+    document.querySelectorAll('#finTabs .sv2-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    finTab = btn.getAttribute('data-ftab');
+    renderFinanceiro();
+  });
+
+  search?.addEventListener('input', ()=>{ finSearchTerm = search.value; renderFinanceiro(); });
+
+  content.addEventListener('click', async ev=>{
+    const el = ev.target.closest('[data-act]');
+    if(!el) return;
+    ev.stopPropagation();
+    const act = el.getAttribute('data-act');
+    const key = el.getAttribute('data-key');
+    const docid = el.getAttribute('data-docid');
+
+    if(act === 'fin-toggle'){
+      finExpanded[key] = !finExpanded[key];
+      renderFinanceiro();
+      return;
+    }
+    if(act === 'fin-copy'){
+      const msg = finBuildMessage(key);
+      if(!msg){ showToast('Sem valores em aberto para este cliente.'); return; }
+      copyTextToClipboard(msg)
+        .then(()=> showToast(`📋 Conta de <b>${finKeyName(key)}</b> copiada<br><span style="font-weight:400;font-size:.78rem">Cole no WhatsApp para cobrar</span>`))
+        .catch(()=> prompt('Copiar manualmente (Ctrl+C):', msg));
+      return;
+    }
+    if(act === 'fin-baixa'){
+      const n = items.filter(it => finItemKey(it) === key && finTabMatch(it)).length;
+      if(!confirm(`Marcar como PAGO os ${n} item(ns) listados de ${finKeyName(key)}?`)) return;
+      finBulkUpdate(key, 'Pago');
+      return;
+    }
+    if(act === 'fin-bulk'){
+      finStatusPicker(el, null, s => finBulkUpdate(key, s));
+      return;
+    }
+    if(act === 'fin-status'){
+      const idx = findItemIndexByDocId(docid);
+      if(idx < 0) return;
+      finStatusPicker(el, items[idx].status, s => quickUpdateStatus(docid, s));
+      return;
+    }
+    if(act === 'fin-edit'){
+      openEditModal(docid);
+      return;
+    }
+  });
+}
+
+async function finBulkUpdate(key, newStatus){
+  const targets = items.filter(it => finItemKey(it) === key && finTabMatch(it));
+  if(!targets.length) return;
+  targets.forEach(it=>{
+    it.status = newStatus;
+    if(isResgateStatus(newStatus)) it.valor = 0;
+  });
+  saveAllLocal();
+  renderTable();
+  showToast(`✅ ${targets.length} item(ns) de <b>${finKeyName(key)}</b> → ${newStatus}`);
+  if(window.auth && auth.currentUser && window.db){
+    for(let i=0;i<targets.length;i++){
+      const it = targets[i];
+      if(!it._id) continue;
+      const payload = { status: newStatus };
+      if(isResgateStatus(newStatus)) payload.valor = 0;
+      try{ await db.collection('pedidos').doc(it._id).update(payload); }
+      catch(e){ console.error('finBulkUpdate cloud', e); }
+    }
+  }
+}
+
+function renderFinanceiro(){
+  const content = document.getElementById('financeiroContent');
+  if(!content) return;
+  const groups = finBuildGroups();
+  const totalReceber  = groups.reduce((s,g)=> s + g.receber, 0);
+  const totalEntregar = groups.reduce((s,g)=> s + g.entregar, 0);
+  const totalItens    = groups.reduce((s,g)=> s + g.list.length, 0);
+
+  let html = `<div class="fin-summary">
+    <div class="fin-sum-card highlight"><span class="fin-sum-label">A receber</span><span class="fin-sum-value">${formatBRL(totalReceber)}</span></div>
+    <div class="fin-sum-card"><span class="fin-sum-label">Clientes</span><span class="fin-sum-value">${groups.length}</span></div>
+    <div class="fin-sum-card"><span class="fin-sum-label">Itens pendentes</span><span class="fin-sum-value">${totalItens}</span></div>
+    <div class="fin-sum-card"><span class="fin-sum-label">Itens a entregar</span><span class="fin-sum-value">${totalEntregar}</span></div>
+  </div>`;
+
+  if(!groups.length){
+    html += `<div class="fin-empty">Tudo em dia por aqui. Nenhuma pendência nesta visão.</div>`;
+    content.innerHTML = html;
+    return;
+  }
+
+  html += `<div class="fin-list">`;
+  groups.forEach(g=>{
+    const open = !!finExpanded[g.key];
+    html += `<div class="fin-client${open?' open':''}">
+      <div class="fin-client-head" data-act="fin-toggle" data-key="${g.key}">
+        <button type="button" class="fin-toggle" data-act="fin-toggle" data-key="${g.key}" title="Ver pedidos">${open?'▾':'▸'}</button>
+        <div class="fin-client-info">
+          <div class="fin-client-name">${g.name}</div>
+          <div class="fin-client-meta">${g.list.length} pedido(s)${g.entregar?` · ${g.entregar} a entregar`:''}${g.phone?` · ${g.phone}`:''}</div>
+        </div>
+        <div class="fin-client-total">${formatBRL(g.receber)}</div>
+        <div class="fin-client-actions">
+          <button type="button" class="small-btn btn-gray"   data-act="fin-copy"  data-key="${g.key}">📋 Cobrar</button>
+          <button type="button" class="small-btn btn-yellow" data-act="fin-bulk"  data-key="${g.key}">⚡ Alterar todos</button>
+          <button type="button" class="small-btn btn-green"  data-act="fin-baixa" data-key="${g.key}">✓ Dar baixa</button>
+        </div>
+      </div>`;
+
+    if(open){
+      html += `<div class="fin-items">`;
+      g.list.forEach(it=>{
+        const docid = it._id || it._localId;
+        const tot = Number(it.qtd||0) * Number(it.valor||0);
+        html += `<div class="fin-item">
+          <span class="status-pill s-${(it.status||'').replace(/\s/g,'-')} fin-status" data-act="fin-status" data-docid="${docid}" title="Clique para alterar o status">${it.status}</span>
+          <span class="fin-item-prod"><b>${it.sabor}</b><small>${it.tam} · ${it.qtd} × ${formatBRL(it.valor)}</small></span>
+          <span class="fin-item-meta">#${it.pedido} · ${it.data||''}</span>
+          <span class="fin-item-total">${formatBRL(tot)}</span>
+          <button type="button" class="icon-btn" data-act="fin-edit" data-docid="${docid}" title="Editar item">✏️</button>
+        </div>`;
+      });
+      html += `</div>`;
+    }
+    html += `</div>`;
+  });
+  html += `</div>`;
+  content.innerHTML = html;
+}
+
+function openFinanceiro(){
+  finEnsureDom();
+  finSearchTerm = '';
+  const s = document.getElementById('financeiroSearch');
+  if(s) s.value = '';
+  renderFinanceiro();
+  showModal(document.getElementById('modalFinanceiroBack'));
+}
+
+function refreshFinanceiroIfOpen(){
+  const m = document.getElementById('modalFinanceiroBack');
+  if(!m || m.style.display !== 'flex') return;
+  m.style.zIndex = 99999;
+  renderFinanceiro();
+}
+
+/* ============================================================
+   TABELA DE PEDIDOS — botão "copiar conta do cliente"
+   ============================================================ */
+function finInjectContaButtons(){
+  document.querySelectorAll('#tbodyMain tr.item-row').forEach(tr=>{
+    const cell = tr.querySelector('.actions-cell');
+    if(!cell || cell.querySelector('[data-action="copy-account"]')) return;
+    const docid = tr.getAttribute('data-docid');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'icon-btn icon-btn-conta';
+    b.title = 'Copiar conta do cliente (cobrança)';
+    b.textContent = '💰';
+    b.setAttribute('data-action','copy-account');
+    b.setAttribute('data-docid', String(docid));
+    b.addEventListener('click', ev=>{
+      ev.stopPropagation(); ev.preventDefault();
+      const idx = findItemIndexByDocId(docid);
+      if(idx < 0) return;
+      copyClientAccount(items[idx].cliente, items[idx].clientId);
+    });
+    cell.insertBefore(b, cell.firstChild);
+  });
+}
+
+/* ============================================================
+   Ganchos: mantém tudo sincronizado sem alterar o código antigo
+   ============================================================ */
+const __felitoOrigRenderTable = renderTable;
+renderTable = function(){
+  const r = __felitoOrigRenderTable.apply(this, arguments);
+  try{ finInjectContaButtons(); }catch(e){ console.error('injectConta', e); }
+  try{ refreshFinanceiroIfOpen(); }catch(e){ console.error('refreshFin', e); }
+  return r;
+};
+
+const __felitoOrigShowModal = showModal;
+showModal = function(backEl){
+  const f = document.getElementById('modalFinanceiroBack');
+  if(f && f !== backEl) f.style.zIndex = 50;
+  return __felitoOrigShowModal.apply(this, arguments);
+};
+
+/* Primeira renderização já com o novo layout */
+finEnsureDom();
+renderTable();
+renderClientsTable();
+
 })();
