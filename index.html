@@ -41,6 +41,7 @@
             <button id="btnStockV2" class="btn-green">📦 Estoque</button>
             <button id="btnAnalytics" class="btn-gray" style="background:#5c4a8a;color:#fff">📊 Vendas</button>
             <button id="btnFidelity" class="btn-accent">🏆 Fidelidade</button>
+            <button id="btnFinanceiro" class="btn-gray" style="background:#b45309;color:#fff">💵 Financeiro</button>
             <button id="btnClients" class="btn-gray">👥 Clientes</button>
             <button id="btnProdutos" class="btn-gray" style="background:#0f766e;color:#fff">🍦 Produtos</button>
             <button id="btnLogout" class="btn-red">Sair</button>
@@ -321,6 +322,25 @@
     </div>
   </div>
 
+  <!-- modal financeiro / pendências -->
+  <div id="modalFinanceiroBack" class="modal-back">
+    <div class="modal sv2-modal" role="dialog" aria-modal="true">
+      <div class="sv2-header">
+        <h3>💵 Financeiro</h3>
+        <div class="sv2-tabs" id="finTabs">
+          <button type="button" class="sv2-tab active" data-ftab="receber">💰 A receber</button>
+          <button type="button" class="sv2-tab" data-ftab="entregar">🚚 A entregar</button>
+          <button type="button" class="sv2-tab" data-ftab="todas">📋 Todas as pendências</button>
+        </div>
+        <button id="financeiroClose" class="btn-gray" type="button" style="margin-left:auto;white-space:nowrap">✕ Fechar</button>
+      </div>
+      <div style="padding:14px 20px 0 20px;background:var(--cream)">
+        <input id="financeiroSearch" placeholder="Buscar cliente ou telefone" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ddd" />
+      </div>
+      <div id="financeiroContent" class="sv2-content"></div>
+    </div>
+  </div>
+
   <!-- modal fidelidade -->
   <div id="modalFidelityBack" class="modal-back">
     <div class="modal sv2-modal" role="dialog" aria-modal="true">
@@ -351,7 +371,7 @@
   </div>
 
   <!-- ===================================================
-       MODAL ESTOQUE MULTI-LOCAL v2  (NOVO)
+       MODAL ESTOQUE MULTI-LOCAL v2
        =================================================== -->
   <div id="modalStockV2Back" class="modal-back">
     <div class="modal sv2-modal" role="dialog" aria-modal="true">
